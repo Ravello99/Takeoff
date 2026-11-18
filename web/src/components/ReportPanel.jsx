@@ -809,8 +809,8 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
         )}
         {rows.length > 0 && (
           <p style={{ maxWidth: 980, margin: "14px auto 0", fontSize: 11.5, color: "var(--ink-muted)", lineHeight: 1.6 }}>
-            <strong>{AU} w/Waste</strong> = measured quantity × waste %. Waste is set per condition in the canvas. Wall {AU} comes from Surface-Area
-            traces (run × height); Border {AU} from Linear runs with a thickness.{M ? " Supporting-material coverage rates stay as entered (SF/LF-based)." : ""}
+            <strong>{AU} w/Waste</strong> = measured quantity × waste %. Waste is set per condition in the canvas. Wall {AU} comes from Wall traces (length × height, one face); wall length also counts as LF for framing. Ceiling/Area {AU} comes from Area and Box traces.
+            {M ? " Supporting-material coverage rates stay as entered (SF/LF-based)." : ""}
             {tableCols.some((c) => c.key === "perimeter_ref") && (
               <> Perim {LU} (ref) sums floor-trace perimeters — includes door openings and shared walls; reference only, never totaled or waste-adjusted.</>
             )}
@@ -830,10 +830,9 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
                 <table style={{ width: "100%", borderCollapse: "collapse", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)" }}>
                   <thead>
                     <tr>
-                      <th style={{ ...th, textAlign: "left" }}>Finish</th>
-                      <th style={th}>Floor {AU}</th>
+                      <th style={{ ...th, textAlign: "left" }}>Condition</th>
+                      <th style={th}>Ceiling/Area {AU}</th>
                       <th style={th}>Wall {AU}</th>
-                      <th style={th}>Border {AU}</th>
                       <th style={th}>{LU}</th>
                       <th style={th}>EA</th>
                     </tr>
@@ -850,7 +849,6 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
                         </td>
                         <td style={td}>{sheetNum(areaVal(r.floor_sf, units))}</td>
                         <td style={td}>{sheetNum(areaVal(r.wall_sf, units))}</td>
-                        <td style={td}>{sheetNum(areaVal(r.border_sf, units))}</td>
                         <td style={td}>{sheetNum(lenVal(r.lf, units))}</td>
                         <td style={td}>{sheetNum(r.ea, 0)}</td>
                       </tr>

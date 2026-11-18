@@ -1081,7 +1081,7 @@ function TakeoffsPanel({
             </div>
           </div>
           <span data-row-actions style={{ display: "inline-flex", alignItems: "center", gap: 8, flexShrink: 0, marginLeft: "auto" }}>
-          <span style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, color: "var(--ink-muted)", flexShrink: 0 }}>{shapeCount}▦</span>
+          {!simple && <span style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, color: "var(--ink-muted)", flexShrink: 0 }}>{shapeCount}▦</span>}
           {/* scope collision (#366): this condition shares floor with another
               (or with itself — a double trace). The badge is the count; the
               list under the ACTIVE row names each pair with a Look link. */}
@@ -1096,11 +1096,11 @@ function TakeoffsPanel({
             style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: matOn ? "var(--ink)" : "transparent", color: matOn ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 11 }}>
             <Icon name="product" size={11} />Materials{c.materials?.length ? ` (${c.materials.length})` : ""}
           </button>
-          <button onClick={(e) => { e.stopPropagation(); onTogglePin(c.id); }}
+          {!simple && <button onClick={(e) => { e.stopPropagation(); onTogglePin(c.id); }}
             title={pinned ? "Unpin from the top-bar palette" : (palette.length >= 9 ? "Palette is full (9)" : "Pin to the top-bar palette for one-click access")}
             style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", padding: "2px 5px", borderRadius: 0, border: `1px solid ${pinned ? "var(--cobalt)" : "var(--ink-faint)"}`, background: "transparent", color: pinned ? "var(--cobalt)" : (!pinned && palette.length >= 9 ? "var(--ink-faint)" : "var(--ink-muted)"), cursor: "pointer", lineHeight: 0 }}>
             <Icon name="pin" size={12} />
-          </button>
+          </button>}
           <button onClick={(e) => { e.stopPropagation(); onDeleteCondition(c.id); }} title="Delete this condition (and its takeoffs)"
             style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--c-danger)", cursor: "pointer", fontSize: 12 }}>✕</button>
           </span>
@@ -1325,10 +1325,10 @@ function TakeoffsPanel({
           <div style={{ padding: "6px 12px", borderTop: "1px solid var(--ink-faint)" }}>
             <button onClick={onAddCondition} style={{ width: "100%", padding: "6px 10px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 12.5, color: "var(--ink-muted)" }}>+ condition</button>
           </div>
-          <div style={{ padding: "8px 12px", borderTop: "1px solid var(--ink-faint)", color: "var(--ink-muted)", fontSize: 10.5 }}>
+          {!simple && <div style={{ padding: "8px 12px", borderTop: "1px solid var(--ink-faint)", color: "var(--ink-muted)", fontSize: 10.5 }}>
             {keyText("Select a shape on the plan, then ⧉ Copy / ⎘ Paste (⌘C / ⌘V) — it lands on the sheet under your cursor.")}
             <br />⌫ undo point · Esc cancel · scroll = zoom · pan mid-measure: press-and-drag (a click without dragging places the point).
-          </div>
+          </div>}
         </div>
         </>}
         {/* Library tab — reusable condition templates, browser-wide */}

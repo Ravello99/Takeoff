@@ -307,6 +307,11 @@ const TOOL_VERB = {
   arrow: "annotate", dimension: "annotate", stamp: "annotate", bubble: "annotate",
   textcopy: "read_sheet_text",
 };
+// Vanguard simple mode: plain-English tool names in the status bar.
+const TOOL_FRIENDLY = {
+  select: "Select", surface: "Wall", area: "Area", rect: "Box", linear: "Line", count: "Count",
+  symbol: "Auto count", deduct: "Cut out", "deduct-rect": "Cut out", calibrate: "Set scale", zone: "Zone check",
+};
 
 // Pure geometry helpers (star/cloud paths, snap grid, angle lock, metrics,
 // hit-testing) live in lib/geometry.js — byte-identical with Spline's copy.
@@ -11255,7 +11260,7 @@ export default function TakeoffCanvas() {
       })()}
       <footer className="ink-panel ticks"
         style={{ height: "var(--status-h)", flex: "0 0 auto", display: "flex", alignItems: "center", gap: 12, padding: "0 14px", fontFamily: "var(--f-mono)", fontSize: "var(--fs-xs)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", overflow: "hidden", userSelect: "none" }}>
-        <span style={{ color: "var(--status-acc)", textShadow: "var(--glow)" }}>{TOOL_VERB[tool] || tool}</span>
+        <span style={{ color: "var(--status-acc)", textShadow: "var(--glow)" }}>{(simple && TOOL_FRIENDLY[tool]) || TOOL_VERB[tool] || tool}</span>
         <span style={{ opacity: 0.25 }} aria-hidden="true">|</span>
         <span ref={statusCoordRef} aria-hidden="true" style={{ minWidth: 150 }} />
         <span style={{ opacity: 0.25 }} aria-hidden="true">|</span>

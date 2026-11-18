@@ -32,3 +32,15 @@
   font-weight: 700; padding-left: 14px; padding-right: 14px;
 }
 .app-shell.vg-simple .calm-context select { border-radius: 8px; min-height: 32px; }
+
+/* Polish after first live review: everything in the rail fits without
+   scrolling on a laptop screen, and the active tool is unmistakable. */
+.app-shell.vg-simple [data-tool-rail] { gap: 2px; padding-top: 4px; }
+.app-shell.vg-simple .vg-tile { min-height: 46px; padding: 4px 2px; gap: 2px; }
+.app-shell.vg-simple .vg-tile span { font-size: 10.5px; }
+.app-shell.vg-simple .vg-rail-group { margin: 4px 0 1px; }
+.app-shell.vg-simple .vg-tile[aria-pressed="true"] {
+  background: var(--cobalt) !important; color: var(--accent-contrast) !important;
+  border-color: var(--cobalt) !important; box-shadow: none !important;
+}
+.app-shell.vg-simple .vg-tile[aria-pressed="true"] svg { color: var(--accent-contrast) !important; }
