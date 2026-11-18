@@ -27,7 +27,11 @@ import os
 import re
 import secrets
 import shutil
+import smtplib
 import sqlite3
+import ssl
+from email.message import EmailMessage
+from email.utils import formataddr, parseaddr
 import sys
 import threading
 import time
@@ -37,6 +41,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 SESSION_DAYS = 30
+RESET_HOURS = 1
+EMAIL_KEYS = ("smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from", "public_url")
 INVITE_DAYS = 7
 MAX_JSON = 64 * 1024 * 1024        # takeoff payload / library JSON
 MAX_PDF = 1024 * 1024 * 1024       # 1 GB per plan file
@@ -69,6 +75,9 @@ CREATE TABLE IF NOT EXISTS pdf_revs (
   project_id TEXT NOT NULL, name TEXT NOT NULL, rev INTEGER NOT NULL, hash TEXT NOT NULL,
   ts REAL NOT NULL, PRIMARY KEY (project_id, name, rev));
 CREATE TABLE IF NOT EXISTS library (kind TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS resets (
+  token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at REAL NOT NULL);
 """
 
 
@@ -114,6 +123,52 @@ class LoginLimiter:
             self.fails.pop(key, None)
 
 
+# ── email ───────────────────────────────────────────────────────────────────
+def get_settings(c) -> dict:
+    return {r["key"]: r["value"] for r in c.execute("SELECT key, value FROM settings")}
+
+
+def email_ready(cfg: dict) -> bool:
+    return bool(cfg.get("smtp_host") and cfg.get("smtp_user") and cfg.get("smtp_password"))
+
+
+def send_mail(cfg: dict, to: str, subject: str, text: str, html: str | None = None) -> None:
+    """Send one message through the configured SMTP mailbox. Raises on failure."""
+    host = cfg["smtp_host"]
+    port = int(cfg.get("smtp_port") or 465)
+    user, password = cfg["smtp_user"], cfg["smtp_password"]
+    name, addr = parseaddr(cfg.get("smtp_from") or user)
+    msg = EmailMessage()
+    msg["From"] = formataddr((name or "Vanguard Takeoff", addr or user))
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(text)
+    if html:
+        msg.add_alternative(html, subtype="html")
+    ctx = ssl.create_default_context()
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, context=ctx, timeout=20) as s:
+            s.login(user, password)
+            s.send_message(msg)
+    else:
+        with smtplib.SMTP(host, port, timeout=20) as s:
+            s.starttls(context=ctx)
+            s.login(user, password)
+            s.send_message(msg)
+
+
+def mail_html(heading: str, body: str, button: str, url: str) -> str:
+    esc = lambda t: (t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    return f"""<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#1C2430">
+<p style="font-size:18px;font-weight:bold;color:#0B2556;margin:0 0 4px">Vanguard Takeoff</p>
+<p style="font-size:12px;color:#5E6878;margin:0 0 24px">Vanguard Drywall &amp; Acoustics</p>
+<h2 style="font-size:20px;margin:0 0 12px">{esc(heading)}</h2>
+<p style="font-size:15px;line-height:1.5">{esc(body)}</p>
+<p style="margin:28px 0"><a href="{esc(url)}" style="background:#0B2556;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:bold;display:inline-block">{esc(button)}</a></p>
+<p style="font-size:12px;color:#5E6878;line-height:1.5">If the button doesn't work, paste this link into your browser:<br>{esc(url)}</p>
+</div>"""
+
+
 class ApiError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
@@ -131,8 +186,11 @@ class App:
         self.db_path = data_dir / "takeoff.db"
         self.limiter = LoginLimiter()
         self.write_lock = threading.Lock()   # serialises version checks + blob refcounts
-        with self.db() as c:
+        c = self.db()
+        try:
             c.executescript(SCHEMA)
+        finally:
+            c.close()
 
     def db(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.db_path, timeout=30)
@@ -174,6 +232,12 @@ class Handler(BaseHTTPRequestHandler):
             if fwd:
                 return fwd
         return ip
+
+    def public_url(self, cfg: dict) -> str:
+        if cfg.get("public_url"):
+            return cfg["public_url"].rstrip("/")
+        proto = "https" if self.secure() else "http"
+        return f"{proto}://{self.headers.get('Host', 'localhost')}"
 
     def secure(self) -> bool:
         return self.headers.get("X-Forwarded-Proto", "").lower() == "https"
@@ -305,7 +369,8 @@ class Handler(BaseHTTPRequestHandler):
         if p == ["status"] and m == "GET":
             n = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
             u = self.current_user(c)
-            return self.send_json(200, {"server": True, "setup_needed": n == 0, "user": user_json(u) if u else None})
+            return self.send_json(200, {"server": True, "setup_needed": n == 0, "user": user_json(u) if u else None,
+                                        "email_enabled": email_ready(get_settings(c))})
 
         if p == ["setup"] and m == "POST":
             body = self.read_json()
@@ -362,6 +427,42 @@ class Handler(BaseHTTPRequestHandler):
                 u = c.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
             return self.send_json(200, {"user": user_json(u)}, {"Set-Cookie": self.session_cookie(token)})
 
+        # ── password reset (public) ────────────────────────────────────────
+        if p == ["password", "forgot"] and m == "POST":
+            body = self.read_json()
+            email = str(body.get("email", "")).strip()
+            key = f"forgot|{email.lower()}|{self.client_ip()}"
+            if a.limiter.blocked(key):
+                raise ApiError(429, "Too many requests. Wait 15 minutes and try again.")
+            a.limiter.fail(key)   # counts every request: max 5 per 15 min
+            cfg = get_settings(c)
+            u = c.execute("SELECT * FROM users WHERE email=? AND active=1", (email,)).fetchone()
+            if u and email_ready(cfg):
+                url = self.create_reset(c, u["id"], cfg)
+                self.mail_async(cfg, u["email"], "Reset your Vanguard Takeoff password",
+                                f"Hi {u['name']},\n\nSomeone (hopefully you) asked to reset your Vanguard Takeoff password. "
+                                f"Open this link within {RESET_HOURS} hour to choose a new one:\n\n{url}\n\n"
+                                "If you didn't ask for this, ignore this email; your password stays the same.",
+                                mail_html("Reset your password", f"Hi {u['name']}, open the link below within {RESET_HOURS} hour to choose a new password. If you didn't ask for this, ignore this email.", "Choose a new password", url))
+            # same answer whether or not the account exists
+            return self.send_json(200, {"ok": True, "email_enabled": email_ready(cfg)})
+        if len(p) == 3 and p[:2] == ["password", "reset"] and m in ("GET", "POST"):
+            row = c.execute("SELECT r.*, u.email, u.name FROM resets r JOIN users u ON u.id=r.user_id WHERE r.token_hash=? AND r.expires_at>? AND u.active=1",
+                            (token_hash(p[2]), time.time())).fetchone()
+            if not row:
+                raise ApiError(404, "This reset link has expired or was already used. Ask for a new one.")
+            if m == "GET":
+                return self.send_json(200, {"email": row["email"]})
+            pw = str(self.read_json().get("password", ""))
+            if len(pw) < MIN_PASSWORD:
+                raise ApiError(400, f"Use a password with at least {MIN_PASSWORD} characters.")
+            c.execute("UPDATE users SET pw=? WHERE id=?", (hash_password(pw), row["user_id"]))
+            c.execute("DELETE FROM resets WHERE user_id=?", (row["user_id"],))
+            c.execute("DELETE FROM sessions WHERE user_id=?", (row["user_id"],))   # sign out everywhere else
+            token = self.new_session(c, row["user_id"])
+            u = c.execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone()
+            return self.send_json(200, {"user": user_json(u)}, {"Set-Cookie": self.session_cookie(token)})
+
         me = self.require_user(c)
 
         if p == ["me"] and m == "GET":
@@ -400,6 +501,55 @@ class Handler(BaseHTTPRequestHandler):
             if not active:
                 c.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
             return self.send_json(200, {"user": user_json(c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone())})
+        if len(p) == 3 and p[0] == "users" and p[2] == "reset" and m == "POST":
+            self.require_admin(c)
+            target = c.execute("SELECT * FROM users WHERE id=? AND active=1", (int(p[1]) if p[1].isdigit() else -1,)).fetchone()
+            if not target:
+                raise ApiError(404, "No such active user.")
+            cfg = get_settings(c)
+            url = self.create_reset(c, target["id"], cfg)
+            out = {"url": url, "emailed": False}
+            if email_ready(cfg):
+                try:
+                    send_mail(cfg, target["email"], "Reset your Vanguard Takeoff password",
+                              f"Hi {target['name']},\n\nYour admin sent you a link to set a new Vanguard Takeoff password. "
+                              f"It works once, within {RESET_HOURS} hour:\n\n{url}\n",
+                              mail_html("Set a new password", f"Hi {target['name']}, your admin sent you this link to set a new password. It works once, within {RESET_HOURS} hour.", "Choose a new password", url))
+                    out["emailed"] = True
+                except Exception as e:
+                    out["email_error"] = f"Couldn't send the email ({type(e).__name__}: {e}). Copy the link instead."
+            return self.send_json(200, out)
+        if p == ["settings", "email"] and m == "GET":
+            self.require_admin(c)
+            cfg = get_settings(c)
+            return self.send_json(200, {"smtp_host": cfg.get("smtp_host", ""), "smtp_port": cfg.get("smtp_port", "465"),
+                                        "smtp_user": cfg.get("smtp_user", ""), "smtp_from": cfg.get("smtp_from", ""),
+                                        "public_url": cfg.get("public_url", ""), "has_password": bool(cfg.get("smtp_password")),
+                                        "configured": email_ready(cfg), "suggested_url": self.public_url({})})
+        if p == ["settings", "email"] and m == "PUT":
+            self.require_admin(c)
+            body = self.read_json()
+            for k in EMAIL_KEYS:
+                if k not in body:
+                    continue
+                v = str(body[k] or "").strip()
+                if k == "smtp_password" and not v:
+                    continue   # blank = keep the saved password
+                if k == "smtp_port" and v and not v.isdigit():
+                    raise ApiError(400, "Port must be a number (465 or 587).")
+                c.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+            return self.send_json(200, {"ok": True, "configured": email_ready(get_settings(c))})
+        if p == ["settings", "email", "test"] and m == "POST":
+            admin = self.require_admin(c)
+            cfg = get_settings(c)
+            if not email_ready(cfg):
+                raise ApiError(400, "Fill in the mail server, username and password first.")
+            try:
+                send_mail(cfg, admin["email"], "Vanguard Takeoff test email",
+                          "This is a test from Vanguard Takeoff. Email is working: invites and password resets will be sent automatically.")
+            except Exception as e:
+                raise ApiError(400, f"The mail server refused it: {type(e).__name__}: {e}")
+            return self.send_json(200, {"ok": True, "to": admin["email"]})
         if p == ["invites"] and m == "GET":
             self.require_admin(c)
             rows = c.execute("SELECT email, role, created_at, expires_at, token_hash FROM invites WHERE expires_at>? ORDER BY created_at DESC", (time.time(),)).fetchall()
@@ -419,7 +569,19 @@ class Handler(BaseHTTPRequestHandler):
             token = secrets.token_urlsafe(24)
             c.execute("INSERT INTO invites VALUES (?,?,?,?,?,?)",
                       (token_hash(token), email, role, admin["id"], time.time(), time.time() + INVITE_DAYS * 86400))
-            return self.send_json(200, {"email": email, "role": role, "path": f"/invite?token={token}", "expires_days": INVITE_DAYS})
+            out = {"email": email, "role": role, "path": f"/invite?token={token}", "expires_days": INVITE_DAYS, "emailed": False}
+            cfg = get_settings(c)
+            if body.get("send_email", True) and email_ready(cfg):
+                url = self.public_url(cfg) + out["path"]
+                try:
+                    send_mail(cfg, email, "You're invited to Vanguard Takeoff",
+                              f"Hi,\n\n{admin['name']} invited you to Vanguard Takeoff, Vanguard Drywall's takeoff and estimating app.\n\n"
+                              f"Open this link to set up your account (it works once and expires in {INVITE_DAYS} days):\n\n{url}\n",
+                              mail_html("You're invited", f"{admin['name']} invited you to Vanguard Takeoff, Vanguard Drywall's takeoff and estimating app. The link works once and expires in {INVITE_DAYS} days.", "Set up my account", url))
+                    out["emailed"] = True
+                except Exception as e:  # report it; the admin can still copy the link
+                    out["email_error"] = f"Couldn't send the email ({type(e).__name__}: {e}). Copy the link instead."
+            return self.send_json(200, out)
         if len(p) == 2 and p[0] == "invites" and m == "DELETE":
             self.require_admin(c)
             c.execute("DELETE FROM invites WHERE substr(token_hash,1,16)=?", (p[1],))
@@ -529,6 +691,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, {"ok": True})
 
         raise ApiError(404, "Not found.")
+
+    def create_reset(self, c, user_id: int, cfg: dict) -> str:
+        token = secrets.token_urlsafe(24)
+        c.execute("DELETE FROM resets WHERE user_id=? OR expires_at<?", (user_id, time.time()))
+        c.execute("INSERT INTO resets VALUES (?,?,?)", (token_hash(token), user_id, time.time() + RESET_HOURS * 3600))
+        return f"{self.public_url(cfg)}/reset?token={token}"
+
+    def mail_async(self, cfg: dict, to: str, subject: str, text: str, html: str):
+        """Send after the response, so timing never reveals whether an account exists."""
+        def go():
+            try:
+                send_mail(cfg, to, subject, text, html)
+            except Exception as e:
+                sys.stderr.write(f"[takeoff] couldn't email {to}: {e!r}\n")
+        threading.Timer(0.2, go).start()
 
     def validate_account(self, body: dict, need_email: bool):
         name = str(body.get("name", "")).strip()[:80]

@@ -69,3 +69,4 @@
 .vg-picker footer { border-top: 1px solid var(--ink-faint); padding: 8px 10px; }
 .vg-pick-new { width: 100%; padding: 8px; border: 1px dashed var(--ink-faint); border-radius: 8px; background: none; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; color: var(--cobalt); }
 .vg-pick-new:hover { background: var(--paper-shadow); }
+.vg-pick-cat { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted); padding: 8px 8px 2px; }

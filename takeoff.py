@@ -9,6 +9,7 @@ takeoff.py — set up, brand, build and host Vanguard Takeoff.
     python3 takeoff.py serve            # app + accounts server on port 8090
     python3 takeoff.py service          # run in the background and start on boot (as root)
     python3 takeoff.py domain takeoff.vanguarddrywall.ca   # HTTPS via the DrywallApp's Caddy
+    python3 takeoff.py email            # copy the DrywallApp's mailbox settings for emailed invites/resets
     python3 takeoff.py backup           # back up all projects and accounts
     python3 takeoff.py docker           # write Dockerfile.vanguard + nginx config
 
@@ -483,6 +484,45 @@ def cmd_domain(args) -> None:
     log(f"  cd {HERE} && python3 takeoff.py service --host 127.0.0.1")
 
 
+def cmd_email(args) -> None:
+    """Copy the DrywallApp's mailbox settings (backend/.env SMTP_*) into Takeoff."""
+    import sqlite3
+    dwa = Path(args.drywallapp).expanduser() if args.drywallapp else None
+    if not dwa:
+        for cand in (Path.home() / "DrywallApp", Path("/root/DrywallApp"), Path("/opt/DrywallApp")):
+            if (cand / "backend" / ".env").exists():
+                dwa = cand
+                break
+    env_file = dwa / "backend" / ".env" if dwa else None
+    if not env_file or not env_file.exists():
+        sys.exit("Couldn't find the DrywallApp's backend/.env. Pass --drywallapp /path/to/DrywallApp, "
+                 "or enter the mail settings on the Team page instead.")
+    env = {}
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            env[k.strip()] = v.strip().strip('"').strip("'")
+    if not (env.get("SMTP_HOST") and env.get("SMTP_USER") and env.get("SMTP_PASSWORD")):
+        sys.exit(f"{env_file} has no SMTP_HOST / SMTP_USER / SMTP_PASSWORD. Enter the settings on the Team page instead.")
+    values = {"smtp_host": env["SMTP_HOST"], "smtp_port": env.get("SMTP_PORT", "465"), "smtp_user": env["SMTP_USER"],
+              "smtp_password": env["SMTP_PASSWORD"],
+              "smtp_from": env.get("SMTP_FROM", "").replace("VanGuard Drywall", "Vanguard Takeoff") or f"Vanguard Takeoff <{env['SMTP_USER']}>"}
+    if args.url:
+        values["public_url"] = args.url.rstrip("/")
+    db = HERE / "data" / "takeoff.db"
+    if not db.exists():
+        sys.exit("Start Takeoff once first (python3 takeoff.py service) so its database exists.")
+    con = sqlite3.connect(db)
+    with con:
+        con.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        for k, v in values.items():
+            con.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+    con.close()
+    log(f"Mail settings copied from {env_file}: {values['smtp_user']} via {values['smtp_host']}:{values['smtp_port']}.")
+    log("Open Team → Email in Takeoff and click 'Send test email' to check it.")
+
+
 def cmd_backup(args) -> None:
     """Copy the database (safely, even while running) and plan files to one archive."""
     import sqlite3
@@ -562,7 +602,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn in [("setup", cmd_setup), ("brand", cmd_brand), ("build", cmd_build),
-                     ("serve", cmd_serve), ("service", cmd_service), ("domain", cmd_domain), ("backup", cmd_backup), ("docker", cmd_docker),
+                     ("serve", cmd_serve), ("service", cmd_service), ("domain", cmd_domain), ("email", cmd_email), ("backup", cmd_backup), ("docker", cmd_docker),
                      ("init-config", cmd_init_config), ("all", cmd_all)]:
         sp = sub.add_parser(name)
         sp.set_defaults(func=fn)
@@ -570,6 +610,9 @@ def main() -> None:
             sp.add_argument("name", help="e.g. takeoff.vanguarddrywall.ca")
             sp.add_argument("--drywallapp", default="", help="DrywallApp folder (default: ~/DrywallApp)")
             sp.add_argument("--port", type=int, default=8090)
+        if name == "email":
+            sp.add_argument("--drywallapp", default="", help="DrywallApp folder (default: ~/DrywallApp)")
+            sp.add_argument("--url", default="https://takeoff.vanguarddrywall.ca", help="address used in emailed links")
         if name == "backup":
             sp.add_argument("--to", default="", help="folder for the backup archive (default: ./backups)")
         if name in {"serve", "all", "service"}:

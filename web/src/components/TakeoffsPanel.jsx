@@ -1,3 +1,4 @@
+import { groupByCategory, categoryOf, CATEGORIES } from "../lib/categories.js";
 import { useSimpleMode } from "../lib/simpleMode.js";
 // TakeoffsPanel — the docked conditions panel on the canvas's right edge
 // (reflows the canvas, not an overlay): every condition with its running
@@ -527,6 +528,14 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
           <DimParamInput name="condition-thickness-in" internal={c.thickness_in} units={units} kind="thickness" width={50}
             onCommit={(v) => onSetCondParam("thickness_in", v)} />
         </span>}
+        {/* Vanguard: category — groups the assembly list (Walls, Ceilings…) */}
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Category — groups assemblies in the list and the tool pop-up. Pick one or type your own.">
+          <span style={{ color: "var(--ink-muted)" }}>Category</span>
+          <input name="condition-category" list="vg-categories" value={c.category ?? ""} placeholder={categoryOf(c)}
+            onChange={(e) => onUpdateCond({ category: e.target.value || undefined })}
+            style={{ width: 132, fontSize: 11, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", padding: "2px 4px" }} />
+          <datalist id="vg-categories">{CATEGORIES.map((n) => <option key={n} value={n} />)}</datalist>
+        </span>
         {/* Vanguard: drywall assembly inputs — Layers re-scales board & screws,
             O.C. re-scales studs / channel (lib/assembly.js). */}
         <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Drywall layers per side — re-figures this assembly's board sheets and screws in the Report">
@@ -927,6 +936,8 @@ function TakeoffsPanel({
     return v;
   }, [conditions, condQ, matchesQuery, activeCond, panelPrefs.az]);
   const condGroups = useMemo(() => {
+    // Vanguard simple mode: always grouped by assembly category (Walls, Ceilings…)
+    if (simple && !panelPrefs.az) return groupByCategory(condView, (it) => it.c);
     if (!panelPrefs.group) return [{ name: null, items: condView }];
     const by = new Map();
     for (const it of condView) {
@@ -935,7 +946,7 @@ function TakeoffsPanel({
       by.get(fam).push(it);
     }
     return [...by.entries()].sort((a, b) => natCompare(a[0], b[0])).map(([name, items]) => ({ name, items }));
-  }, [condView, panelPrefs.group]);
+  }, [condView, panelPrefs.group, panelPrefs.az, simple]);
   // "no match" keys on the QUERY missing, not on an empty view — the forced-in
   // active row would otherwise hide the message forever (includes("") is true)
   const searchMiss = conditions.length > 0 && !condView.some(({ c }) => matchesQuery(c));
@@ -1277,9 +1288,9 @@ function TakeoffsPanel({
           <button onClick={() => onPanelPrefs((p) => ({ ...p, az: !p.az }))}
             title="Natural sort by tag (CT-2 before CT-10) — a view; hotkeys 1–9 keep their original numbering"
             style={{ padding: "3px 7px", borderRadius: 0, border: `1px solid ${panelPrefs.az ? "var(--cobalt)" : "var(--ink-faint)"}`, background: panelPrefs.az ? "var(--cobalt)" : "transparent", color: panelPrefs.az ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>A→Z</button>
-          <button onClick={() => onPanelPrefs((p) => ({ ...p, group: !p.group }))}
+          {!simple && <button onClick={() => onPanelPrefs((p) => ({ ...p, group: !p.group }))}
             title="Group by tag family (the text before the dash: CPT, LVT, CT…)"
-            style={{ padding: "3px 7px", borderRadius: 0, border: `1px solid ${panelPrefs.group ? "var(--cobalt)" : "var(--ink-faint)"}`, background: panelPrefs.group ? "var(--cobalt)" : "transparent", color: panelPrefs.group ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>≡ grp</button>
+            style={{ padding: "3px 7px", borderRadius: 0, border: `1px solid ${panelPrefs.group ? "var(--cobalt)" : "var(--ink-faint)"}`, background: panelPrefs.group ? "var(--cobalt)" : "transparent", color: panelPrefs.group ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>≡ grp</button>}
         </div>
         {/* bulk actions — appear while a ⌘/⇧ multi-selection is live
             (liveChecked: the count never claims ids the list lost) */}

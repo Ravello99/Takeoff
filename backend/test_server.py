@@ -46,8 +46,8 @@ class Client:
 
 
 class ServerTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
+    def setUp(self):
+        cls = self
         cls.tmp = tempfile.TemporaryDirectory()
         dist = Path(cls.tmp.name) / "dist"
         (dist / "assets").mkdir(parents=True)
@@ -58,10 +58,10 @@ class ServerTest(unittest.TestCase):
         cls.port = cls.httpd.server_address[1]
         threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.tmp.cleanup()
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.tmp.cleanup()
 
     def test_full_flow(self):
         admin = Client(self.port)
@@ -179,6 +179,71 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(admin.req("POST", "/api/account/password", {"current": "correct horse", "new": "newpassword1"})[0], 200)
         self.assertEqual(admin.req("POST", "/api/logout")[0], 200)
         self.assertEqual(admin.req("GET", "/api/me")[0], 401)
+
+    def test_email_flows(self):
+        sent = []
+        real = server.send_mail
+        server.send_mail = lambda cfg, to, subject, text, html=None: sent.append({"to": to, "subject": subject, "text": text, "cfg": cfg})
+        try:
+            admin = Client(self.port)
+            admin.req("POST", "/api/setup", {"name": "Al Admin", "email": "mail-admin@v.ca", "password": "correct horse"})
+            email = "mail-admin@v.ca"
+            self.assertFalse(admin.req("GET", "/api/status")[1]["email_enabled"])
+            # invite without email configured → link only
+            s, out, _ = admin.req("POST", "/api/invites", {"email": "early@v.ca"})
+            self.assertEqual((s, out["emailed"]), (200, False))
+            # configure SMTP; password never comes back
+            s, out, _ = admin.req("PUT", "/api/settings/email", {"smtp_host": "mail.v.ca", "smtp_port": "465", "smtp_user": "noreply@v.ca",
+                                                                  "smtp_password": "secret", "smtp_from": "Vanguard <noreply@v.ca>", "public_url": "https://takeoff.v.ca/"})
+            self.assertTrue(out["configured"])
+            s, cfg, _ = admin.req("GET", "/api/settings/email")
+            self.assertTrue(cfg["has_password"])
+            self.assertNotIn("smtp_password", cfg)
+            admin.req("PUT", "/api/settings/email", {"smtp_password": ""})   # blank keeps it
+            self.assertTrue(admin.req("GET", "/api/settings/email")[1]["has_password"])
+            self.assertEqual(admin.req("PUT", "/api/settings/email", {"smtp_port": "abc"})[0], 400)
+            self.assertEqual(admin.req("POST", "/api/settings/email/test")[0], 200)
+            self.assertEqual((sent[-1]["to"], sent[-1]["subject"]), (email, "Vanguard Takeoff test email"))
+            self.assertTrue(admin.req("GET", "/api/status")[1]["email_enabled"])
+            # invite is emailed with the public URL
+            s, out, _ = admin.req("POST", "/api/invites", {"email": "carl@v.ca"})
+            self.assertTrue(out["emailed"])
+            self.assertEqual(sent[-1]["to"], "carl@v.ca")
+            self.assertIn("https://takeoff.v.ca/invite?token=", sent[-1]["text"])
+            token = sent[-1]["text"].split("invite?token=")[1].split()[0]
+            carl = Client(self.port)
+            self.assertEqual(carl.req("POST", f"/api/invites/{token}/accept", {"name": "Carl", "password": "carlpassword"})[0], 200)
+            # forgot password: same answer for unknown emails, mail only for real ones
+            n = len(sent)
+            anon = Client(self.port)
+            self.assertEqual(anon.req("POST", "/api/password/forgot", {"email": "nobody@v.ca"})[0], 200)
+            self.assertEqual(anon.req("POST", "/api/password/forgot", {"email": "carl@v.ca"})[0], 200)
+            import time as _t; _t.sleep(0.6)   # mail goes out just after the response
+            self.assertEqual(len(sent), n + 1)
+            self.assertEqual(sent[-1]["to"], "carl@v.ca")
+            reset = sent[-1]["text"].split("reset?token=")[1].split()[0]
+            self.assertEqual(anon.req("GET", f"/api/password/reset/{reset}")[1]["email"], "carl@v.ca")
+            self.assertEqual(anon.req("POST", f"/api/password/reset/{reset}", {"password": "short"})[0], 400)
+            s, out, _ = anon.req("POST", f"/api/password/reset/{reset}", {"password": "brand new pass"})
+            self.assertEqual((s, out["user"]["email"]), (200, "carl@v.ca"))
+            self.assertEqual(carl.req("GET", "/api/me")[0], 401)          # old session signed out
+            self.assertEqual(anon.req("GET", "/api/me")[0], 200)           # new one works
+            self.assertEqual(Client(self.port).req("POST", f"/api/password/reset/{reset}", {"password": "again again"})[0], 404)  # one-time
+            # admin-triggered reset, and a mail failure is reported, not fatal
+            users = admin.req("GET", "/api/users")[1]["users"]
+            carl_id = [u["id"] for u in users if u["email"] == "carl@v.ca"][0]
+            s, out, _ = admin.req("POST", f"/api/users/{carl_id}/reset")
+            self.assertTrue(out["emailed"] and "/reset?token=" in out["url"])
+            def boom(*a, **k): raise OSError("connection refused")
+            server.send_mail = boom
+            s, out, _ = admin.req("POST", "/api/invites", {"email": "dana@v.ca"})
+            self.assertEqual((s, out["emailed"]), (200, False))
+            self.assertIn("connection refused", out["email_error"])
+            self.assertEqual(admin.req("POST", "/api/settings/email/test")[0], 400)
+            # non-admins can't see or change mail settings
+            self.assertEqual(anon.req("GET", "/api/settings/email")[0], 403)
+        finally:
+            server.send_mail = real
 
     def test_lockout(self):
         c = Client(self.port)

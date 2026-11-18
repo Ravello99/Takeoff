@@ -13,6 +13,7 @@ import { conditionTotals } from "../../lib/totals.js";
 import { DRYWALL_DEFAULTS } from "../../lib/drywallDefaults.js";
 import { LAYER_OPTIONS, STUD_OC_OPTIONS } from "../../lib/assembly.js";
 import { ColorSwatch, PALETTE } from "../hatches.jsx";
+import { CATEGORIES, categoryOf, groupByCategory } from "../../lib/categories.js";
 import "../../styles/vanguardAssemblies.css";
 
 const TYPES = [
@@ -31,7 +32,6 @@ const SCALES = [
   { id: "oc_cross", label: "O.C. (4' cross tee per SF)" },
 ];
 const newId = (p) => `${p}-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
-const typeOf = (t) => t.measure || "other";
 
 // starter material library: every distinct material in the Vanguard defaults
 function starterMaterials() {
@@ -103,7 +103,7 @@ export default function AssembliesPage() {
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = (templates || []).map((x, i) => ({ x, i })).filter(({ x }) => !q || `${x.finish_tag} ${x.spec?.description || ""}`.toLowerCase().includes(q));
-    return [...TYPES, { id: "other", label: "Other" }].map((g) => ({ ...g, items: list.filter(({ x }) => typeOf(x) === g.id) })).filter((g) => g.items.length);
+    return groupByCategory(list, ({ x }) => x).map((g) => ({ id: g.name, label: g.name, items: g.items }));
   }, [templates, query]);
 
   const libShown = useMemo(() => {
@@ -116,7 +116,7 @@ export default function AssembliesPage() {
 
   const createAssembly = (measure) => {
     const n = templates.length;
-    const base = { finish_tag: `NEW-${n + 1}`, measure, color: PALETTE[n % PALETTE.length], fill: PALETTE[n % PALETTE.length], hatch: "solid", waste_pct: measure === "area" ? 5 : 10, materials: [],
+    const base = { finish_tag: `NEW-${n + 1}`, measure, category: categoryOf({ measure }), color: PALETTE[n % PALETTE.length], fill: PALETTE[n % PALETTE.length], hatch: "solid", waste_pct: measure === "area" ? 5 : 10, materials: [],
       spec: { description: "", remarks: TYPES.find((x) => x.id === measure)?.tool || "" },
       ...(measure === "wall" ? { height_ft: 10, board_layers: 1, stud_oc_in: 16 } : {}) };
     updateTemplates([...templates, base]);
@@ -181,6 +181,9 @@ export default function AssembliesPage() {
                 <select value={t.measure || ""} onChange={(e) => patch({ measure: e.target.value || undefined })}>
                   <option value="">—</option>{TYPES.map((ty) => <option key={ty.id} value={ty.id}>{ty.one}</option>)}
                 </select></label>
+              <label className="va-f"><span>Category</span>
+                <input list="va-categories" value={t.category ?? ""} placeholder={categoryOf(t)} onChange={(e) => patch({ category: e.target.value || undefined })} />
+                <datalist id="va-categories">{CATEGORIES.map((n) => <option key={n} value={n} />)}</datalist></label>
               <label className="va-f"><span>Waste %</span><input type="number" min="0" value={t.waste_pct ?? 0} onChange={(e) => patch({ waste_pct: Math.max(0, Number(e.target.value) || 0) })} /></label>
               {t.measure === "wall" && <>
                 <label className="va-f"><span>Height (ft)</span><input type="number" min="0" step="0.5" value={t.height_ft ?? ""} onChange={(e) => patch({ height_ft: e.target.value === "" ? undefined : Number(e.target.value) })} /></label>

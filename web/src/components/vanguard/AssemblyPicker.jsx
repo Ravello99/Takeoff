@@ -4,6 +4,7 @@
 // "New assembly" button. Esc, a click outside, or picking one closes it.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ColorSwatch } from "../hatches.jsx";
+import { groupByCategory } from "../../lib/categories.js";
 
 export const TOOL_MEASURE = { surface: "wall", area: "area", rect: "area", linear: "line", count: "count", symbol: "count" };
 const MEASURE_LABEL = { wall: "Wall", area: "Area / ceiling", line: "Line", count: "Count" };
@@ -62,6 +63,12 @@ export default function AssemblyPicker({ tool, top, conditions, shapes, activeId
     </button>
   );
 
+  // category headings (Walls, Shaft walls, Bulkheads…) inside each section
+  const grouped = (list) => {
+    const groups = groupByCategory(list);
+    if (groups.length < 2) return list.map(row);
+    return groups.map((g) => <div key={g.name}><div className="vg-pick-cat">{g.name}</div>{g.items.map(row)}</div>);
+  };
   const maxTop = typeof window !== "undefined" ? Math.max(60, window.innerHeight - 440) : top;
   return (
     <div ref={ref} className="vg-picker" role="dialog" aria-label={`Choose a ${MEASURE_LABEL[measure] || ""} assembly`}
@@ -74,14 +81,14 @@ export default function AssemblyPicker({ tool, top, conditions, shapes, activeId
         <input className="vg-pick-search" autoFocus placeholder="Search assemblies…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search assemblies" />
       )}
       <div className="vg-pick-list">
-        {primary.map(row)}
+        {grouped(primary)}
         {primary.length === 0 && !showOthers && <p className="vg-pick-empty">No {MEASURE_LABEL[measure]?.toLowerCase()} assemblies yet.</p>}
         {others.length > 0 && (
           <>
             <button type="button" className="vg-pick-more" onClick={() => setShowOthers((v) => !v)} aria-expanded={showOthers}>
               {showOthers ? "▾" : "▸"} Other assemblies ({others.length})
             </button>
-            {showOthers && others.map(row)}
+            {showOthers && grouped(others)}
           </>
         )}
       </div>

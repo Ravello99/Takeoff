@@ -91,7 +91,7 @@ function SetupPage({ onUser }) {
   );
 }
 
-function LoginPage({ onUser }) {
+function LoginPage({ onUser, emailEnabled }) {
   const [f, setF] = useState({ email: "", password: "" });
   const { busy, error, submit } = useSubmit(async () => {
     const r = await api("POST", "/api/login", { json: f });
@@ -105,7 +105,61 @@ function LoginPage({ onUser }) {
         {error && <p className="vp-error">{error}</p>}
         <button className="vp-btn vp-primary" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
       </form>
-      <p className="vp-muted vp-small">Forgot your password? Ask your admin to send you a new invite.</p>
+      {emailEnabled
+        ? <p className="vp-small"><Link to="/forgot">Forgot your password?</Link></p>
+        : <p className="vp-muted vp-small">Forgot your password? Ask your admin for a reset link.</p>}
+    </AuthCard>
+  );
+}
+
+function ForgotPage() {
+  const [email, setEmail] = useState("");
+  const [done, setDone] = useState(false);
+  const { busy, error, submit } = useSubmit(async () => {
+    await api("POST", "/api/password/forgot", { json: { email } });
+    setDone(true);
+  });
+  if (done) return (
+    <AuthCard title="Check your email" subtitle={`If ${email} has an account, a link to choose a new password is on its way. It works for 1 hour.`}>
+      <Link className="vp-btn" to="/">Back to sign in</Link>
+    </AuthCard>
+  );
+  return (
+    <AuthCard title="Reset your password" subtitle="Enter your email and we'll send you a link to choose a new password.">
+      <form onSubmit={submit} className="vp-form">
+        <Field label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" autoFocus required />
+        {error && <p className="vp-error">{error}</p>}
+        <button className="vp-btn vp-primary" disabled={busy}>{busy ? "Sending…" : "Send reset link"}</button>
+      </form>
+      <p className="vp-small"><Link to="/">Back to sign in</Link></p>
+    </AuthCard>
+  );
+}
+
+function ResetPage({ onUser }) {
+  const [params] = useSearchParams();
+  const token = params.get("token") || "";
+  const [info, setInfo] = useState(null);
+  const [loadErr, setLoadErr] = useState("");
+  const [f, setF] = useState({ password: "", confirm: "" });
+  const navigate = useNavigate();
+  useEffect(() => { api("GET", `/api/password/reset/${enc(token)}`).then(setInfo, (e) => setLoadErr(e.message)); }, [token]);
+  const { busy, error, submit } = useSubmit(async () => {
+    if (f.password !== f.confirm) throw new Error("The two passwords don't match.");
+    const r = await api("POST", `/api/password/reset/${enc(token)}`, { json: { password: f.password } });
+    onUser(r.user);
+    navigate("/", { replace: true });
+  });
+  if (loadErr) return <AuthCard title="Reset link not valid" subtitle={loadErr}><Link className="vp-btn" to="/forgot">Send a new link</Link></AuthCard>;
+  if (!info) return <AuthCard title="Checking your link…" />;
+  return (
+    <AuthCard title="Choose a new password" subtitle={`For ${info.email}`}>
+      <form onSubmit={submit} className="vp-form">
+        <Field label="New password (8+ characters)" type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} autoComplete="new-password" autoFocus required minLength={8} />
+        <Field label="Confirm new password" type="password" value={f.confirm} onChange={(e) => setF({ ...f, confirm: e.target.value })} autoComplete="new-password" required />
+        {error && <p className="vp-error">{error}</p>}
+        <button className="vp-btn vp-primary" disabled={busy}>{busy ? "Saving…" : "Save and sign in"}</button>
+      </form>
     </AuthCard>
   );
 }
@@ -300,7 +354,61 @@ function ConfirmDialog({ title, body, cta, onConfirm, onClose }) {
 }
 
 // ── team (admin) ────────────────────────────────────────────────────────────
-function TeamPage({ user }) {
+function EmailSettings({ onChanged }) {
+  const [cfg, setCfg] = useState(null);
+  const [f, setF] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [open, setOpen] = useState(false);
+  const load = useCallback(() => api("GET", "/api/settings/email").then((c) => {
+    setCfg(c);
+    setF({ smtp_host: c.smtp_host, smtp_port: c.smtp_port || "465", smtp_user: c.smtp_user, smtp_password: "", smtp_from: c.smtp_from, public_url: c.public_url || c.suggested_url });
+    setOpen(!c.configured);
+  }), []);
+  useEffect(() => { load(); }, [load]);
+  const save = useSubmit(async () => {
+    setMsg("");
+    const r = await api("PUT", "/api/settings/email", { json: f });
+    await load(); onChanged?.();
+    setMsg(r.configured ? "Saved. Send a test email to make sure it works." : "Saved, but the mail server, username and password are all needed.");
+  });
+  const test = useSubmit(async () => {
+    setMsg("");
+    const r = await api("POST", "/api/settings/email/test");
+    setMsg(`Test email sent to ${r.to}. Check that inbox (and spam).`);
+  });
+  if (!cfg || !f) return null;
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  return (
+    <section className="vp-panel">
+      <div className="vp-panel-head">
+        <h2>Email</h2>
+        <span className={cfg.configured ? "vp-pill vp-pill-ok" : "vp-pill"}>{cfg.configured ? `On — sending from ${cfg.smtp_user}` : "Off — invites and resets are copy-and-send links"}</span>
+        <button className="vp-btn vp-ghost" onClick={() => setOpen((v) => !v)}>{open ? "Hide settings" : "Settings"}</button>
+      </div>
+      {open && (
+        <form className="vp-form vp-mailform" onSubmit={save.submit}>
+          <p className="vp-muted vp-small">Use the same mailbox as the DrywallApp (for example noreply@vanguarddrywall.ca on mail.vanguarddrywall.ca). Port 465 uses SSL, 587 uses STARTTLS.</p>
+          <div className="vp-mailgrid">
+            <Field label="Mail server" value={f.smtp_host} onChange={set("smtp_host")} placeholder="mail.vanguarddrywall.ca" />
+            <Field label="Port" value={f.smtp_port} onChange={set("smtp_port")} placeholder="465" inputMode="numeric" />
+            <Field label="Username (mailbox)" value={f.smtp_user} onChange={set("smtp_user")} placeholder="noreply@vanguarddrywall.ca" autoComplete="off" />
+            <Field label={cfg.has_password ? "Password (leave blank to keep)" : "Password"} type="password" value={f.smtp_password} onChange={set("smtp_password")} autoComplete="new-password" />
+            <Field label="From name and address" value={f.smtp_from} onChange={set("smtp_from")} placeholder="Vanguard Takeoff <noreply@vanguarddrywall.ca>" />
+            <Field label="Link address in emails" value={f.public_url} onChange={set("public_url")} placeholder="https://takeoff.vanguarddrywall.ca" />
+          </div>
+          {(save.error || test.error) && <p className="vp-error">{save.error || test.error}</p>}
+          {msg && <p className="vp-ok">{msg}</p>}
+          <div className="vp-row">
+            <button type="button" className="vp-btn" disabled={test.busy || !cfg.configured} onClick={test.submit}>{test.busy ? "Sending…" : "Send test email"}</button>
+            <button className="vp-btn vp-primary" disabled={save.busy}>Save</button>
+          </div>
+        </form>
+      )}
+    </section>
+  );
+}
+
+function TeamPage({ user, emailEnabled, onEmailChanged }) {
   const [users, setUsers] = useState([]);
   const [invites, setInvites] = useState([]);
   const [error, setError] = useState("");
@@ -308,11 +416,13 @@ function TeamPage({ user }) {
   const [role, setRole] = useState("user");
   const [link, setLink] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [sendEmail, setSendEmail] = useState(true);
+  const [resetInfo, setResetInfo] = useState(null);   // { name, url, emailed, email_error }
   const load = useCallback(() => Promise.all([api("GET", "/api/users"), api("GET", "/api/invites")])
     .then(([u, i]) => { setUsers(u.users); setInvites(i.invites); }, (e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
   const invite = useSubmit(async () => {
-    const r = await api("POST", "/api/invites", { json: { email: email.trim(), role } });
+    const r = await api("POST", "/api/invites", { json: { email: email.trim(), role, send_email: emailEnabled && sendEmail } });
     setLink({ ...r, url: `${window.location.origin}${r.path}` });
     setCopied(false); setEmail(""); setRole("user"); load();
   });
@@ -338,12 +448,15 @@ function TeamPage({ user }) {
               <option value="admin">Admin — also manages the team</option>
             </select>
           </label>
-          <button className="vp-btn vp-primary" disabled={invite.busy}>Create invite link</button>
+          <button className="vp-btn vp-primary" disabled={invite.busy}>{emailEnabled && sendEmail ? "Send invite" : "Create invite link"}</button>
         </form>
+        {emailEnabled && <label className="vp-check"><input type="checkbox" checked={sendEmail} onChange={(e) => setSendEmail(e.target.checked)} /> Email the invite for me</label>}
         {invite.error && <p className="vp-error">{invite.error}</p>}
         {link && (
           <div className="vp-linkbox">
-            <p><strong>Send this link to {link.email}.</strong> It works once and expires in {link.expires_days} days.</p>
+            {link.emailed
+              ? <p><strong>Invite emailed to {link.email}.</strong> The link works once and expires in {link.expires_days} days. A copy, in case it lands in spam:</p>
+              : <p>{link.email_error && <span className="vp-error-inline">{link.email_error} </span>}<strong>Send this link to {link.email}.</strong> It works once and expires in {link.expires_days} days.</p>}
             <div className="vp-row"><input readOnly value={link.url} onFocus={(e) => e.target.select()} aria-label="Invite link" />
               <button className="vp-btn" onClick={copy}>{copied ? "Copied ✓" : "Copy link"}</button>
               <a className="vp-btn" href={mail}>Email it</a></div>
@@ -374,13 +487,30 @@ function TeamPage({ user }) {
                   <option value="user">Team member</option><option value="admin">Admin</option>
                 </select>
               </td>
-              <td className="vp-right">{u.id !== user.id && (u.active
+              <td className="vp-right">{u.id !== user.id && u.active && (
+                <button className="vp-btn vp-ghost" onClick={async () => {
+                  try { const r = await api("POST", `/api/users/${u.id}/reset`); setResetInfo({ name: u.name, email: u.email, ...r }); }
+                  catch (e) { setError(e.message); }
+                }}>{emailEnabled ? "Send password reset" : "Password reset link"}</button>
+              )}{u.id !== user.id && (u.active
                 ? <button className="vp-btn vp-ghost vp-danger" onClick={() => patch(u, { active: false })}>Turn off access</button>
                 : <button className="vp-btn vp-ghost" onClick={() => patch(u, { active: true })}>Turn access back on</button>)}</td>
             </tr>
           ))}
         </tbody></table>
+        {resetInfo && (
+          <div className="vp-linkbox">
+            {resetInfo.emailed
+              ? <p><strong>Reset link emailed to {resetInfo.email}.</strong> It works once, within 1 hour.</p>
+              : <p>{resetInfo.email_error && <span className="vp-error-inline">{resetInfo.email_error} </span>}<strong>Send this link to {resetInfo.name}.</strong> It works once, within 1 hour.</p>}
+            <div className="vp-row"><input readOnly value={resetInfo.url} onFocus={(e) => e.target.select()} aria-label="Reset link" />
+              <button className="vp-btn" onClick={() => navigator.clipboard?.writeText(resetInfo.url)}>Copy link</button>
+              <button className="vp-btn vp-ghost" onClick={() => setResetInfo(null)}>Done</button></div>
+          </div>
+        )}
       </section>
+
+      <EmailSettings onChanged={onEmailChanged} />
     </main>
   );
 }
@@ -409,6 +539,8 @@ function ProjectCanvas() {
 export default function ServerRoot({ initial }) {
   const [user, setUser] = useState(initial.user);
   const [setupNeeded, setSetupNeeded] = useState(initial.setup_needed);
+  const [emailEnabled, setEmailEnabled] = useState(!!initial.email_enabled);
+  const refreshStatus = () => api("GET", "/api/status").then((st) => setEmailEnabled(!!st.email_enabled), () => {});
   const navigate = useNavigate();
   useEffect(() => onSignedOut(() => setUser(null)), []);
   const onUser = (u) => { setUser(u); setSetupNeeded(false); };
@@ -418,13 +550,15 @@ export default function ServerRoot({ initial }) {
   return (
     <Routes>
       <Route path="/invite" element={<InvitePage onUser={onUser} />} />
+      <Route path="/reset" element={<ResetPage onUser={onUser} />} />
+      {!user && <Route path="/forgot" element={<ForgotPage />} />}
       {!user ? (
-        <Route path="*" element={setupNeeded ? <SetupPage onUser={onUser} /> : <LoginPage onUser={onUser} />} />
+        <Route path="*" element={setupNeeded ? <SetupPage onUser={onUser} /> : <LoginPage onUser={onUser} emailEnabled={emailEnabled} />} />
       ) : (<>
         <Route path="/project/:id" element={<ProjectCanvas />} />
         <Route path="/" element={<><TopBar user={user} onSignOut={signOut} /><ProjectsPage user={user} /></>} />
         <Route path="/assemblies" element={<><TopBar user={user} onSignOut={signOut} /><AssembliesPage /></>} />
-        <Route path="/team" element={user.role === "admin" ? <><TopBar user={user} onSignOut={signOut} /><TeamPage user={user} /></> : <Navigate to="/" replace />} />
+        <Route path="/team" element={user.role === "admin" ? <><TopBar user={user} onSignOut={signOut} /><TeamPage user={user} emailEnabled={emailEnabled} onEmailChanged={refreshStatus} /></> : <Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </>)}
     </Routes>

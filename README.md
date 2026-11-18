@@ -22,6 +22,19 @@ and server-stored projects:
 - If two people edit the same project at once, the second save is refused
   with a "reload to get their changes" message, so no one overwrites anyone.
 
+**Email (invites and password resets):** on the Team page, open *Email* and
+enter the mailbox (the same one the DrywallApp uses works), or copy the
+DrywallApp's settings in one step:
+
+```bash
+python3 takeoff.py email      # reads ~/DrywallApp/backend/.env
+```
+
+Then click *Send test email*. With email on, invites are emailed, the sign-in
+page offers *Forgot your password?* (a reset link valid for 1 hour), and the
+admin can send anyone a reset link. Without it, the same links are shown to
+copy and send yourself.
+
 Data lives in `data/` (database + plan files). Back it up with
 `python3 takeoff.py backup`. Use HTTPS (a subdomain behind Caddy) before
 inviting people: over plain http, passwords cross the network unencrypted.

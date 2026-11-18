@@ -1,3 +1,4 @@
+import { categoryOf } from "../lib/categories.js";
 import AssemblyPicker, { TOOL_MEASURE } from "../components/vanguard/AssemblyPicker.jsx";
 import { useSimpleMode, setSimpleMode } from "../lib/simpleMode.js";
 import "../styles/vanguardSimple.css";
@@ -6560,7 +6561,7 @@ export default function TakeoffCanvas() {
   function addCondition(measure = null) {
     const tag = (window.prompt("Name or tag for the new assembly (e.g. W7 or 1A — match the drawings):") || "").trim();
     if (!tag) return;
-    const c = mintCondition(tag, typeof measure === "string" ? { measure, ...(measure === "wall" ? { height_ft: 10, board_layers: 1, stud_oc_in: 16 } : {}) } : null);
+    const c = mintCondition(tag, typeof measure === "string" ? { measure, category: categoryOf({ measure }), ...(measure === "wall" ? { height_ft: 10, board_layers: 1, stud_oc_in: 16 } : {}) } : null);
     activateCondition(c.id, { reassign: false });   // no reassign affordance on +condition; still dismisses a live bulk selection
   }
 
@@ -8342,6 +8343,7 @@ export default function TakeoffCanvas() {
     ...(c.board_layers != null ? { board_layers: c.board_layers } : {}),
     ...(c.stud_oc_in != null ? { stud_oc_in: c.stud_oc_in } : {}),
     ...(c.measure ? { measure: c.measure } : {}),
+    ...(c.category ? { category: c.category } : {}),
     ...(c.spec ? { spec: { ...c.spec } } : {}),
     ...(c.laborType != null ? { laborType: c.laborType } : {}),
     ...(c.subfloorType != null ? { subfloorType: c.subfloorType } : {}),

@@ -92,3 +92,14 @@
 .vp-dialog h2 { margin: 0; font-size: 18px; }
 .vp-dialog p { font-size: 14px; line-height: 1.5; }
 .vp-x { border: none; background: none; font-size: 24px; line-height: 1; cursor: pointer; color: var(--vp-muted); }
+.vp-panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.vp-panel-head h2 { margin: 0; }
+.vp-panel-head .vp-btn { margin-left: auto; }
+.vp-pill { font-size: 12px; padding: 3px 10px; border-radius: 12px; background: #F2F4F7; color: var(--vp-muted); }
+.vp-pill-ok { background: #ECFDF3; color: #067647; }
+.vp-mailform { margin-top: 12px; }
+.vp-mailgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 760px) { .vp-mailgrid { grid-template-columns: 1fr; } }
+.vp-ok { color: #067647; background: #ECFDF3; border: 1px solid #ABEFC6; padding: 8px 12px; border-radius: 8px; font-size: 14px; margin: 4px 0; }
+.vp-check { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; margin-top: 10px; }
+.vp-error-inline { color: #B42318; }
