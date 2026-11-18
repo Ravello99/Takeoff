@@ -19,6 +19,7 @@
 // remain stable.
 
 import { round2 } from "./num.js";
+import { effectivePer, scaledText } from "./assembly.js";
 import { REPORT_SCHEMA } from "./takeoffConstants.ts";
 import { csvEsc as esc } from "./csv.js";
 import { GETTERS, CSV_PROFILE, colGetter, floorPerimeterLf, applyUnits, METRIC_CSV_LABELS } from "./reportColumns.js";
@@ -88,11 +89,12 @@ export function conditionTotals(conditions, shapes, ctx = null) {
     // area (SF), linear (LF), count (EA), or figured seam length (LF — weld rod,
     // seam tape). Coverage comes off the product data sheet.
     const materials = (c.materials || []).filter((m) => m && m.name).map((m) => {
-      const per = Math.max(0, Number(m.per) || 0);
+      const per = Math.max(0, effectivePer(m, c));   // Vanguard: board layers / stud O.C. adjust scaled lines
+      const { name: mName, note: mNote } = scaledText(m, c);
       const basisVal = m.basis === "linear" ? lf : m.basis === "count" ? ea : m.basis === "seam_lf" ? seam : m.basis === "perimeter" ? perim : total;
       let qty = per > 0 ? basisVal / per : 0;
       qty = m.round === false ? round2(qty) : Math.ceil(qty - 1e-9);
-      return { name: m.name, unit: m.unit || "", per, basis: m.basis || "area", round: m.round !== false, note: m.note || "", basis_qty: round2(basisVal), qty };
+      return { name: mName, unit: m.unit || "", per, basis: m.basis || "area", round: m.round !== false, note: mNote, basis_qty: round2(basisVal), qty };
     });
     return {
       id: c.id, finish_tag: c.finish_tag, color: c.color, fill: c.fill, hatch: c.hatch,

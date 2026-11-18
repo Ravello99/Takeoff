@@ -24,6 +24,7 @@
 // The panel stays MOUNTED while collapsed (open=false renders null), so all of
 // that transient state survives a collapse/expand round-trip.
 
+import { LAYER_OPTIONS, STUD_OC_OPTIONS } from "../lib/assembly.js";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keyText } from "../lib/keys.ts";
 import { Icon } from "../brand/icons.jsx";
@@ -524,6 +525,26 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
           <DimParamInput name="condition-thickness-in" internal={c.thickness_in} units={units} kind="thickness" width={50}
             onCommit={(v) => onSetCondParam("thickness_in", v)} />
         </span>
+        {/* Vanguard: drywall assembly inputs — Layers re-scales board & screws,
+            O.C. re-scales studs / channel (lib/assembly.js). */}
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Drywall layers per side — re-figures this condition's board sheets and screws in the Report">
+          <span style={{ color: "var(--ink-muted)" }}>Layers</span>
+          <select name="condition-board-layers" value={c.board_layers ?? ""} onChange={(e) => onUpdateCond({ board_layers: e.target.value === "" ? undefined : Number(e.target.value) })}
+            style={{ fontSize: 11, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", padding: "1px 3px" }}>
+            <option value="">—</option>
+            {LAYER_OPTIONS.map((n) => <option key={n} value={n}>{n} / side</option>)}
+          </select>
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Steel stud / channel spacing on centre — re-figures this condition's studs, furring channel and drywall-grid cross tees in the Report">
+          <span style={{ color: "var(--ink-muted)" }}>Stud O.C.</span>
+          <select name="condition-stud-oc" value={c.stud_oc_in ?? ""} onChange={(e) => onUpdateCond({ stud_oc_in: e.target.value === "" ? undefined : Number(e.target.value) })}
+            style={{ fontSize: 11, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", padding: "1px 3px" }}>
+            <option value="">—</option>
+            {STUD_OC_OPTIONS.map((n) => <option key={n} value={n}>{n}&quot;</option>)}
+          </select>
+        </span>
+        {/* Rise / Drop (vertical legs on linear runs) — kept in the docked side panel only. */}
+        {!isRow && (<>
         <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={`Rise (${heightUnit(units)}) — the vertical leg UP every Linear run of this condition adds to its plan length (a home run rising to a box, a riser to the ceiling). LF = plan + rise + drop. Changing it re-flows existing runs; select a run to give it its own rise.`}>
           <span style={{ color: "var(--ink-muted)" }}>↑ Rise</span>
           <DimParamInput name="condition-rise-ft" internal={c.rise_ft} units={units} kind="height" width={48}
@@ -534,6 +555,7 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
           <DimParamInput name="condition-drop-ft" internal={c.drop_ft} units={units} kind="height" width={48}
             onCommit={(v) => onSetCondParam("drop_ft", v)} />
         </span>
+        </>)}
       </div>
       {conditionColumns.length > 0 && isRow && rule()}
       {conditionColumns.length > 0 && (

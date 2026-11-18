@@ -8328,6 +8328,9 @@ export default function TakeoffCanvas() {
     ...(c.thickness_in != null ? { thickness_in: c.thickness_in } : {}),
     ...(c.rise_ft != null ? { rise_ft: c.rise_ft } : {}),
     ...(c.drop_ft != null ? { drop_ft: c.drop_ft } : {}),
+    ...(c.board_layers != null ? { board_layers: c.board_layers } : {}),
+    ...(c.stud_oc_in != null ? { stud_oc_in: c.stud_oc_in } : {}),
+    ...(c.spec ? { spec: { ...c.spec } } : {}),
     ...(c.laborType != null ? { laborType: c.laborType } : {}),
     ...(c.subfloorType != null ? { subfloorType: c.subfloorType } : {}),
     ...(c.roll_setup ? { roll_setup: { ...c.roll_setup } } : {}),   // #136 — the roll spec is part of what makes a CPT-1 template CPT-1
