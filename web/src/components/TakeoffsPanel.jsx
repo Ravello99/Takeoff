@@ -247,6 +247,7 @@ function MaterialsEditor({ materials, onAdd, onUpdate, onRemove, library, libByI
               <option value="linear">linear LF</option>
               <option value="count">each</option>
               <option value="seam_lf" title="Figured seam length from the roll layout — 0 until this condition carries a roll setup">seam LF</option>
+              <option value="perimeter" title="Perimeter of this condition's areas — ceiling wall angle, edge trim">perimeter LF</option>
             </select>
             {ov("basis") && rv(m, "basis")}
             <label style={{ display: "inline-flex", alignItems: "center", gap: 4, color: ov("round") ? "var(--c-warning)" : "var(--ink-muted)" }} title="Round up to whole units (you buy whole buckets/bags)">
@@ -434,10 +435,10 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
       : { padding: "4px 12px 10px", display: "flex", flexDirection: "column", gap: 7, fontSize: 11 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <input name="condition-finish-tag" value={c.finish_tag} onChange={(e) => onUpdateCond({ finish_tag: e.target.value })}
-          title="Rename this condition / finish tag"
+          title="Rename this condition — match the wall / ceiling tag on the drawings"
           style={{ width: 88, padding: "3px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontFamily: "var(--f-mono)", fontWeight: 700, fontSize: 12, color: "var(--ink)" }} />
         <MultiplierField value={c.multiplier || 1} onChange={(n) => onUpdateCond({ multiplier: n })} />
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Waste % — a flooring allowance added on top of the measured quantity in the Report. You choose it per condition (e.g. ~8% straight-lay LVP, ~15% diagonal, ~20% herringbone).">
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Waste % — an allowance added on top of the measured SF/LF in the Report (e.g. ~10% board on partitions, ~5% ACT). Material lines carry their own allowance in their rates.">
           <span style={{ color: "var(--ink-muted)" }}>Waste</span>
           <input name="condition-waste-pct" type="number" min="0" step="1" value={c.waste_pct ?? 0}
             onChange={(e) => onUpdateCond({ waste_pct: Math.max(0, parseFloat(e.target.value) || 0) })}
@@ -644,7 +645,7 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
       {!isRow && c.spec && typeof c.spec === "object" && !Array.isArray(c.spec) && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingTop: 6, marginTop: 1, borderTop: "1px solid var(--ink-faint)" }}>
           <span style={{ color: "var(--ink-muted)", fontSize: 10, letterSpacing: 0.4, textTransform: "uppercase" }}
-            title="Product spec imported from the finish schedule — editable; shown as read-only columns in the Report / CSV / XLSX">Spec</span>
+            title="Assembly description (or spec imported from a schedule) — editable; shown as read-only columns in the Report / CSV / XLSX">Spec</span>
           {SPEC_FIELDS.map(({ field, header }) => (
             <label key={field} style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <span style={{ color: "var(--ink-muted)", width: 104, flexShrink: 0 }}>{header}</span>
@@ -1374,6 +1375,7 @@ function TakeoffsPanel({
                       <option value="linear">linear LF</option>
                       <option value="count">each</option>
                       <option value="seam_lf" title="Figured seam length from the roll layout — 0 until the condition carries a roll setup">seam LF</option>
+                      <option value="perimeter" title="Perimeter of this condition's areas — ceiling wall angle, edge trim">perimeter LF</option>
                     </select>
                     <label style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--ink-muted)" }} title="Round up to whole units">
                       <input name="library-material-round" type="checkbox" checked={lm.round !== false} onChange={(e) => onUpdateLibMaterial(lm.id, { round: e.target.checked })} />round up

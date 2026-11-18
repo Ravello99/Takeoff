@@ -5,6 +5,7 @@
 // PALETTE from components/hatches.jsx, which imports React — don't import
 // this module outside the web app (mcp/ keeps its own mirrored copies).
 
+import { DRYWALL_DEFAULTS } from "./drywallDefaults.js";
 import { RENDER_SCALE } from "./sheets";
 import { STALE_TAB_MESSAGE } from "./store.js";
 import { mintUuid, nowIso } from "./provenance.js";
@@ -65,7 +66,8 @@ export const instantiateTemplate = (t) => ({
   ...(t.drop_ft != null ? { drop_ft: t.drop_ft } : {}),
   ...(t.laborType != null ? { laborType: t.laborType } : {}),
   ...(t.subfloorType != null ? { subfloorType: t.subfloorType } : {}),
-  ...(t.roll_setup ? { roll_setup: { ...t.roll_setup } } : {}),   // #136 — deep-copied like grout: a template's roll spec must never be shared by reference
+  ...(t.roll_setup ? { roll_setup: { ...t.roll_setup } } : {}),
+  ...(t.spec && typeof t.spec === "object" ? { spec: { ...t.spec } } : {}),   // Vanguard — assembly description travels with the template   // #136 — deep-copied like grout: a template's roll spec must never be shared by reference
   // instantiateMaterial (lib/materials.js) deep-copies the nested grout
   // geometry — a shallow spread here aliased the CT-1 seed's one grout object
   // into every fresh-workspace condition across every project in the session
@@ -74,4 +76,4 @@ export const instantiateTemplate = (t) => ({
 // Fresh-workspace seeding reads the user's template library first; the
 // built-in flooring defaults are only the empty-library fallback. Both paths
 // run instantiateTemplate — ONE condition constructor, no drift.
-export const seedConditions = (library) => (library?.length ? library : FLOORING_DEFAULTS).map(instantiateTemplate);
+export const seedConditions = (library) => (library?.length ? library : DRYWALL_DEFAULTS).map(instantiateTemplate);

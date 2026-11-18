@@ -47,8 +47,11 @@ function accumulateRole(acc, s) {
     // same cut. Its area_sf stays at face value on the shape (hover label);
     // this is the ONE place that decides whether it counts toward aggregates.
     case "deduct": if (!s.cuts_shape_id) acc.floor -= cp.area_sf || 0; break;
-    case "floor_area": acc.floor += cp.area_sf || 0; break;
-    case "surface_area": acc.wall += cp.area_sf || 0; break;
+    // Vanguard: an area's perimeter feeds the "perimeter" material basis
+    // (ceiling wall angle, edge trim); a wall's traced length counts as LF so
+    // framing (studs, track) can be priced per linear foot of wall.
+    case "floor_area": acc.floor += cp.area_sf || 0; acc.perim = (acc.perim || 0) + (cp.perimeter_lf || 0); break;
+    case "surface_area": acc.wall += cp.area_sf || 0; acc.lf += cp.perimeter_lf || 0; break;
     case "linear": acc.lf += cp.perimeter_lf || 0; acc.border += cp.area_sf || 0; break;
     case "count": acc.ea += cp.count || 1; break;
     default: break;
@@ -71,14 +74,14 @@ export function conditionTotals(conditions, shapes, ctx = null) {
     const waste = Math.max(0, Number(c.waste_pct) || 0);
     const w = 1 + waste / 100;
     const cs = shapes.filter((s) => s.condition_id === c.id);
-    const acc = { floor: 0, wall: 0, border: 0, lf: 0, ea: 0 };
+    const acc = { floor: 0, wall: 0, border: 0, lf: 0, ea: 0, perim: 0 };
     for (const s of cs) accumulateRole(acc, s);
-    let { floor, wall, border, lf, ea } = acc;
+    let { floor, wall, border, lf, ea, perim } = acc;
     // Seams are a property of the CUT LAYOUT, not of a role — they come in
     // pre-figured per shape and are summed here, then multiplied like every
     // other quantity: N identical units are N cuttings of the same layout.
     let seam = seamByShape ? cs.reduce((n, s) => n + (seamByShape.get(s.id) || 0), 0) : 0;
-    floor *= mult; wall *= mult; border *= mult; lf *= mult; ea *= mult; seam *= mult;
+    floor *= mult; wall *= mult; border *= mult; lf *= mult; ea *= mult; seam *= mult; perim *= mult;
     const total = floor + wall + border;
     // supporting materials: deterministic quantity = basis ÷ coverage, rounded up
     // to whole units (you buy whole buckets/bags). basis = this condition's measured
@@ -86,7 +89,7 @@ export function conditionTotals(conditions, shapes, ctx = null) {
     // seam tape). Coverage comes off the product data sheet.
     const materials = (c.materials || []).filter((m) => m && m.name).map((m) => {
       const per = Math.max(0, Number(m.per) || 0);
-      const basisVal = m.basis === "linear" ? lf : m.basis === "count" ? ea : m.basis === "seam_lf" ? seam : total;
+      const basisVal = m.basis === "linear" ? lf : m.basis === "count" ? ea : m.basis === "seam_lf" ? seam : m.basis === "perimeter" ? perim : total;
       let qty = per > 0 ? basisVal / per : 0;
       qty = m.round === false ? round2(qty) : Math.ceil(qty - 1e-9);
       return { name: m.name, unit: m.unit || "", per, basis: m.basis || "area", round: m.round !== false, note: m.note || "", basis_qty: round2(basisVal), qty };
@@ -422,7 +425,7 @@ export function totalsToCsv(rows, projectName = "", bySheet = null, sheetLabel =
   // supporting materials — per condition, then a combined buy list. Coverage
   // rates deliberately stay as entered (SF/LF-based) in metric mode — the
   // upstream metric contract; the report panel carries the footnote.
-  const basisLabel = (b) => (b === "linear" ? "LF" : b === "count" ? "EA" : b === "seam_lf" ? "seam LF" : "SF");
+  const basisLabel = (b) => (b === "linear" ? "LF" : b === "count" ? "EA" : b === "seam_lf" ? "seam LF" : b === "perimeter" ? "perimeter LF" : "SF");
   const perCond = [];
   for (const r of rows) for (const m of (r.materials || [])) perCond.push([r.finish_tag, m.name, m.qty, m.unit, `1 ${m.unit || "unit"} / ${m.per} ${basisLabel(m.basis)}`, m.note || ""]);
   if (perCond.length) {

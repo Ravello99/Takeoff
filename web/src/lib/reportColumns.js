@@ -38,15 +38,15 @@ export const GETTERS = {
 export const TABLE_PROFILE = [
   { key: "finish",        header: "Finish",     defaultVisible: true, locked: true },
   { key: "shapes",        header: "Shapes",     defaultVisible: true },
-  { key: "floor_sf",      header: "Floor SF",   defaultVisible: true },
+  { key: "floor_sf",      header: "Ceiling/Area SF", defaultVisible: true },
   { key: "wall_sf",       header: "Wall SF",    defaultVisible: true },
-  { key: "border_sf",     header: "Border SF",  defaultVisible: true },
+  { key: "border_sf",     header: "Border SF",  defaultVisible: false },
   { key: "total_sf",      header: "Total SF",   defaultVisible: false, foot: (g) => g.total_sf },
   { key: "lf",            header: "LF",         defaultVisible: true },
   { key: "ea",            header: "EA",         defaultVisible: true },
   { key: "waste_pct",     header: "Waste",      defaultVisible: true },
   { key: "total_sf_net",  header: "SF w/Waste", defaultVisible: true,  accent: true, foot: (g) => g.total_sf_net },
-  { key: "sy_net",        header: "SY w/Waste", defaultVisible: true,  accent: true, foot: (g) => g.sy_net },
+  { key: "sy_net",        header: "SY w/Waste", defaultVisible: false, accent: true, foot: (g) => g.sy_net },
   // grandTotals output carries all four keys the waste getters read, so the
   // TOTAL cells delegate to the same formulas as the body cells
   { key: "waste_sf",      header: "Waste SF",   defaultVisible: false, foot: (g) => GETTERS.waste_sf(g) },

@@ -634,10 +634,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
               title="RFI log as JSON"><Icon name="rfi" size={13} />RFI JSON</button>
           </>
         )}
-        <button className="btn-primary" onClick={() => setShowContribute(true)} disabled={!rows.length}
-          title="Optionally contribute this takeoff's derived data to the open flooring model">
-          <Icon name="oneClick" size={13} />Contribute
-        </button>
+        {/* Vanguard: upstream "contribute to the open flooring model" removed — takeoff data stays in house. */}
         <button onClick={onClose} title="Back to the canvas (Esc)"
           style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 12.5 }}>
           <Icon name="close" size={12} />Close

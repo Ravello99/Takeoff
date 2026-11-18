@@ -149,19 +149,20 @@ export function markupToStampElement(m) {
 // minimal — three genuinely flooring-specific directional marks. Everything
 // else comes from SVG import or Save-as-stamp, so the library carries no
 // decorative title-block art (north arrows, approval stamps, generic bubbles).
+// Vanguard: drywall review marks (ids kept stable for re-seeding).
 export const DEFAULT_STAMPS = [
-  { id: "stmp-direction", name: "Plank / tile direction", elements: [
-    { type: "arrow", from: [-0.05, 0], to: [0.05, 0], color: "#1f3fc7", weight: 1.5 },
+  { id: "stmp-direction", name: "Board / framing direction", elements: [
+    { type: "arrow", from: [-0.05, 0], to: [0.05, 0], color: "#0B2556", weight: 1.5 },
   ] },
-  { id: "stmp-seam", name: "Seam direction", elements: [
+  { id: "stmp-seam", name: "Control joint location", elements: [
     { type: "arrow", from: [-0.05, 0], to: [0.05, 0], color: "#b03a26", line_style: "dashed" },
   ] },
-  { id: "stmp-origin", name: "Pattern origin", elements: [
-    { type: "bubble", at: [0, 0], r: 0.018, text: "PO", color: "#0d9488" },
+  { id: "stmp-origin", name: "Wall type tag", elements: [
+    { type: "bubble", at: [0, 0], r: 0.018, text: "W", color: "#B4973A" },
   ] },
 ];
 export const DEFAULT_STAMP_SETS = [
-  { id: "set-flooring", name: "Flooring shop drawings", stampIds: DEFAULT_STAMPS.map((s) => s.id) },
+  { id: "set-flooring", name: "Drywall review marks", stampIds: DEFAULT_STAMPS.map((s) => s.id) },
 ];
 
 // Fresh-library seeding: a library with stamps is left alone; only a truly

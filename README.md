@@ -1,8 +1,26 @@
 # Vanguard Takeoff
 
-Vanguard Drywall's takeoff and estimating app for interior drywall and ceilings.
-It runs entirely in the browser: open a PDF plan set, set the scale, and measure
-areas, lengths and counts, then export to CSV, Excel or a marked-up PDF.
+Vanguard Drywall's takeoff and estimating app for commercial interior drywall
+and ceilings. It runs entirely in the browser: open a PDF plan set, set the
+scale, and measure wall types, ceilings, trims and counts, then export
+quantities and a material order list to CSV, Excel or a marked-up PDF.
+
+## Drywall conditions
+
+New projects start with a commercial interior set: partitions W1–W6, furring
+F1, shaft wall SW1, ceilings C1–C4 (ACT and gypsum), bulkhead BH1, trims and
+backing, access panels and door frames. Each carries a material list (studs,
+track, board, screws, tape, compound, grid, tile, hanger wire, wall angle).
+See [docs/DRYWALL_CONDITIONS.md](docs/DRYWALL_CONDITIONS.md) for every rate.
+
+- **Walls:** use the Wall tool (S). Trace the wall line; height × length gives
+  wall SF (one face), and the length is the LF used for studs and track.
+- **Ceilings:** use the Area tool (A). The area's perimeter drives wall angle.
+- **Trims/backing:** Linear tool (L). **Frames/panels:** Count tool (C).
+
+The rates are starting points. Replace them with your own production numbers
+in the condition's Materials editor, then save the condition to the Library
+so new projects use your version.
 
 ## Quick start (on the server)
 

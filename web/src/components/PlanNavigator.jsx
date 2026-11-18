@@ -60,6 +60,8 @@ function fmtDate(t) {
 const rowBase = { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-bright)" };
 const ctrlBtn = { display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 12.5 };
 
+const SHOW_SAMPLE_PLAN = false;
+
 export default function PlanNavigator({
   // presentation + exit
   canClose, onExit, onPremium, onStartTour, onConnect, initialMode = "plan", cloudMode,
@@ -1141,6 +1143,8 @@ export default function PlanNavigator({
                     )}
                   </div>
                 )}
+                {/* Vanguard: the upstream guided tour + sample plan are a flooring finish plan — hidden until a drywall sample exists. */}
+                {SHOW_SAMPLE_PLAN && (<>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "18px auto 16px", color: "var(--text-faint)", fontFamily: "var(--f-mono)", fontSize: 10.5, letterSpacing: "0.14em", textTransform: "uppercase" }}>
                   <span style={{ flex: 1, height: 1, background: "var(--ink-faint)" }} />new here?<span style={{ flex: 1, height: 1, background: "var(--ink-faint)" }} />
                 </div>
@@ -1165,6 +1169,7 @@ export default function PlanNavigator({
                   A real medical-center <strong style={{ color: "var(--ink)" }}>floor finish plan</strong> — its scale is read off the sheet;
                   pick a finish and trace a flooring takeoff in seconds.
                 </div>
+                </>)}
                 {onConnect && (
                   <div style={{ marginTop: 14, fontFamily: "var(--f-body)", fontSize: 12.5, color: "var(--ink-muted)" }}>
                     Working with Claude, Codex or Cursor?{" "}

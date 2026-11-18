@@ -65,9 +65,9 @@ function Section({ title, children }) {
 }
 
 const START = [
-  ["Open a plan", "Drag a PDF, an image, or a whole .zip plan set onto the canvas — or click Load sample plan to use the bundled VA finish plan. Plans stay on your device in the default local workspace."],
+  ["Open a plan", "Drag a PDF, an image, or a whole .zip plan set onto the canvas — or click to choose. Plans stay on your device in the default local workspace."],
   ["Set the scale first", "Every quantity depends on it. The Scale menu offers what the sheet's own title block states; hover it to preview a calibrated ruler on the drawing, or calibrate two points of a known dimension. Remembered per sheet."],
-  ["Add a condition", "A condition is a finish — CPT-1, LVT, base. Give it a tag, a waste %, and a colour. Press 1–9 to arm one."],
+  ["Add a condition", "A condition is a wall type, ceiling type, trim or count item — W1, C1, CB. New projects start with a commercial drywall set: rename each to match the tags on your drawings, set wall heights, and adjust material rates. Press 1–9 to arm one."],
   ["Measure", oneClickEnabled() ? "One-Click a room and it selects itself; or trace by hand with Area, Rectangle, Linear or Count. In One-Click, ⏎ creates it." : "Trace by hand with Area, Rectangle, Linear or Count — click the corners, ⏎ closes the shape. (One-Click Area is temporarily gated while the flood engine is re-validated.)"],
   ["Read the report", "REPORT totals every condition, applies waste, and gives you order quantities, a buy list, and CSV / Excel export."],
 ];
@@ -75,7 +75,7 @@ const START = [
 export const TOOLS = [
   ...(oneClickEnabled() ? [[["O"], "One-Click Area — click inside a room, it selects itself"]] : []),
   [["A"], "Area"], [["R"], "Rectangle"], [["L"], "Linear"], [["Q"], "Straight ⇄ Curve (mid-trace)"],
-  [["S"], "Surface Area (walls)"], [["C"], "Count"],
+  [["S"], "Wall — trace the wall line; height × length = wall SF, length = LF for framing"], [["C"], "Count"],
   [["D"], "Deduct shape (Cut Out)"], [["⇧", "D"], "Deduct rectangle"],
   [["H"], "Highlighter"], [["K"], "Check a dimension against what the drawing says"],
   [["N"], "Dimension line — a standalone length label at the sheet's scale (markup, never counted)"],
