@@ -1,0 +1,479 @@
+#!/usr/bin/env python3
+"""
+takeoff.py — set up, brand, build and host Vanguard Takeoff.
+
+    python3 takeoff.py all              # install -> brand -> build -> serve
+    python3 takeoff.py setup            # npm install for the web app
+    python3 takeoff.py brand            # apply logos/colors from brand.json + brand/
+    python3 takeoff.py build            # build the static site into web/dist
+    python3 takeoff.py serve --host 0.0.0.0 --port 8081
+    python3 takeoff.py docker           # write Dockerfile.vanguard + nginx config
+
+Requirements: Python 3.9+, Node.js 24+ and npm.  Optional: Pillow
+(pip install pillow) to resize your logo into every favicon/icon size.
+
+LICENSE COMPLIANCE (kept automatically, do not remove):
+Apache-2.0 lets you modify, rebrand and sell this commercially, and it grants
+no right to the "OpenTakeoff" name (which is why we replace it in the UI).
+In return it requires that you (a) ship a copy of the license, (b) keep the
+original copyright/attribution notices and any NOTICE file, and (c) mark files
+you changed.  This script therefore:
+  * never edits LICENSE / NOTICE files or copyright/SPDX header lines,
+  * publishes them at /licenses/ in the built site (link it from your About
+    screen — customers will never see "OpenTakeoff" in the normal UI),
+  * writes VANGUARD-CHANGES.md listing every file it modified.
+"""
+from __future__ import annotations
+
+import argparse
+import functools
+import http.server
+import json
+import os
+import re
+import shutil
+import socketserver
+import subprocess
+import sys
+from datetime import date
+from pathlib import Path
+
+# --------------------------------------------------------------------------
+# Brand configuration.  Edit here or run `init-config` and edit brand.json.
+# --------------------------------------------------------------------------
+DEFAULT_BRAND = {
+    "app_name": "Vanguard Takeoff",
+    "short_name": "Vanguard",
+    "company": "Vanguard Drywall",
+    "tagline": "Interior drywall & ceiling takeoff",
+    "website": "https://www.vanguarddrywall.com",   # placeholder — change it
+    "support_email": "estimating@vanguarddrywall.com",  # placeholder — change it
+    # Match these to the colors used in the Vanguard mobile app.
+    "colors": {
+        "primary": "#0B2545",      # placeholder navy
+        "accent": "#E4A11B",       # placeholder gold
+        "background": "#FFFFFF",
+        "text": "#1A1A1A",
+    },
+    # Paths to your logo files (relative to this script or absolute).
+    "logo_svg": "brand/vanguard-logo.svg",     # used where the app has SVG logos
+    "logo_png": "brand/vanguard-logo.png",     # square, 1024x1024 recommended
+    "font_family": "",                          # e.g. "'Montserrat', sans-serif"
+    # The app's own CSS color variables -> which brand color they should use.
+    "css_vars": {"--cobalt": "primary", "--cobalt-deep": "primary"},
+}
+
+UPSTREAM_REPO = "https://github.com/Kentucky-ai/opentakeoff"
+UPSTREAM_COMMIT = "84c7f48e458f6cd74f694e3a970dd011c73a8f2e"
+HERE = Path(__file__).resolve().parent
+APP_DIR = HERE            # the repository root holds the app source
+CONFIG_PATH = HERE / "brand.json"
+
+# Display names to replace.  Lowercase "opentakeoff" is deliberately NOT
+# touched: it appears in npm package names, import paths and storage keys,
+# and changing it would break the build or users' saved work.
+# Case-sensitive on purpose: only human-facing spellings are matched.
+NAME_PATTERNS = [
+    re.compile(r"Open[ \-]?Takeoff"),
+    re.compile(r"OPEN[ \-]?TAKEOFF"),
+]
+# Lines that reference code/packages are never rewritten.
+CODE_LINE = re.compile(r"^\s*(import|export\s+\*|export\s+\{.*\}\s+from)\b|require\(|from\s+['\"]|github\.com|npmjs|https?://")
+TEXT_EXTS = {".html", ".htm", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
+             ".css", ".scss", ".json", ".webmanifest", ".txt", ".xml"}
+SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".next", ".svelte-kit",
+             "coverage", "mcp", "test", "tests", "__tests__", "docs", "benchmark"}
+PROTECTED_FILES = re.compile(r"^(LICEN[CS]E|NOTICE|COPYING|AUTHORS)(\..*)?$", re.I)
+PROTECTED_LINE = re.compile(r"copyright|licensed under|spdx-license|apache license", re.I)
+ICON_NAME = re.compile(r"(favicon|logo|icon|apple-touch|og-image|social|brand)", re.I)
+IMG_EXTS = {".png", ".ico", ".svg", ".jpg", ".jpeg", ".webp"}
+
+
+# --------------------------------------------------------------------------
+def log(msg: str) -> None:
+    print(f"[vanguard] {msg}", flush=True)
+
+
+def run(cmd: list[str], cwd: Path | None = None) -> None:
+    log("$ " + " ".join(cmd))
+    subprocess.run(cmd, cwd=cwd, check=True)
+
+
+def load_brand() -> dict:
+    brand = json.loads(json.dumps(DEFAULT_BRAND))
+    if CONFIG_PATH.exists():
+        user = json.loads(CONFIG_PATH.read_text())
+        brand.update({k: v for k, v in user.items() if k not in {"colors", "css_vars"}})
+        brand["colors"].update(user.get("colors", {}))
+        brand["css_vars"].update(user.get("css_vars", {}))
+    return brand
+
+
+def find_web_root() -> Path:
+    """Locate the package.json that owns the web app's `build` script."""
+    candidates = []
+    for pj in APP_DIR.rglob("package.json"):
+        if any(p in SKIP_DIRS for p in pj.relative_to(APP_DIR).parts[:-1]):
+            continue
+        try:
+            scripts = json.loads(pj.read_text()).get("scripts", {})
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if "build" in scripts:
+            candidates.append(pj.parent)
+    if not candidates:
+        sys.exit("No package.json with a 'build' script found — run `setup` first.")
+    # Prefer a folder named web/app/frontend, else the shallowest.
+    candidates.sort(key=lambda p: (p.name not in {"web", "app", "frontend"},
+                                   len(p.parts)))
+    return candidates[0]
+
+
+def find_dist(web_root: Path) -> Path:
+    for name in ("dist", "build", "out", "public"):
+        d = web_root / name
+        if (d / "index.html").exists():
+            return d
+    sys.exit("No built index.html found — run `build` first.")
+
+
+def resolve(path_str: str) -> Path | None:
+    if not path_str:
+        return None
+    p = Path(path_str)
+    p = p if p.is_absolute() else HERE / p
+    return p if p.exists() else None
+
+
+# --------------------------------------------------------------------------
+# setup
+# --------------------------------------------------------------------------
+def cmd_setup(args) -> None:
+    for tool in ("node", "npm"):
+        if not shutil.which(tool):
+            sys.exit(f"'{tool}' is not installed. Install Node.js 24+ (https://nodejs.org).")
+    major = int(subprocess.check_output(["node", "-v"], text=True).strip().lstrip("v").split(".")[0])
+    if major < 24:
+        sys.exit(f"Node.js 24 or newer is required (found v{major}).")
+    web_root = find_web_root()
+    lock = (web_root / "package-lock.json").exists()
+    run(["npm", "ci" if lock else "install"], cwd=web_root)
+
+
+# --------------------------------------------------------------------------
+# brand
+# --------------------------------------------------------------------------
+def replace_names(text: str, brand: dict) -> str:
+    out_lines = []
+    for line in text.splitlines(keepends=True):
+        if PROTECTED_LINE.search(line) or CODE_LINE.search(line):
+            out_lines.append(line)
+            continue
+        for pat in NAME_PATTERNS:
+            line = pat.sub(brand["app_name"], line)
+        out_lines.append(line)
+    return "".join(out_lines)
+
+
+def iter_source_files(web_root: Path):
+    for path in web_root.rglob("*"):
+        rel = path.relative_to(web_root).parts
+        if any(p in SKIP_DIRS for p in rel[:-1]) or not path.is_file():
+            continue
+        if PROTECTED_FILES.match(path.name) or path.suffix.lower() == ".md":
+            continue
+        if path.name in {"package.json", "package-lock.json", "tsconfig.json"}:
+            continue
+        yield path
+
+
+def replace_image(target: Path, brand: dict) -> bool:
+    ext = target.suffix.lower()
+    if ext == ".svg":
+        src = resolve(brand["logo_svg"])
+        if src:
+            shutil.copyfile(src, target)
+            return True
+        return False
+    src = resolve(brand["logo_png"])
+    if not src:
+        return False
+    try:
+        from PIL import Image
+        with Image.open(target) as old:
+            size = old.size
+        with Image.open(src) as logo:
+            logo = logo.convert("RGBA")
+            logo.thumbnail(size, Image.LANCZOS)
+            canvas = Image.new("RGBA", size, (0, 0, 0, 0))
+            canvas.paste(logo, ((size[0] - logo.width) // 2, (size[1] - logo.height) // 2))
+            if ext == ".ico":
+                canvas.save(target, sizes=[(16, 16), (32, 32), (48, 48)])
+            elif ext in {".jpg", ".jpeg"}:
+                canvas.convert("RGB").save(target, quality=92)
+            else:
+                canvas.save(target)
+        return True
+    except ImportError:
+        if ext == ".png":
+            shutil.copyfile(src, target)   # browsers will scale it
+            return True
+        log(f"  Pillow not installed; left {target.name} unchanged")
+        return False
+    except Exception as exc:  # unreadable image etc.
+        log(f"  could not replace {target.name}: {exc}")
+        return False
+
+
+def theme_css(brand: dict, var_names: set[str]) -> str:
+    c = brand["colors"]
+    lines = [f"/* Vanguard Drywall theme — generated {date.today()} */",
+             "/* Light theme only; outranks the app's own :root rules regardless of load order */",
+             'html:root:not([data-theme="dark"]) {',
+             f"  --vg-primary: {c['primary']};", f"  --vg-accent: {c['accent']};",
+             f"  --vg-bg: {c['background']};", f"  --vg-text: {c['text']};"]
+    for v, which in brand.get("css_vars", {}).items():
+        if which in c:
+            lines.append(f"  {v}: {c[which]};")
+    # Point any generically named color variables at Vanguard colors.
+    for v in sorted(var_names - set(brand.get("css_vars", {}))):
+        low = v.lower()
+        if any(k in low for k in ("primary", "brand")):
+            lines.append(f"  {v}: {c['primary']};")
+        elif "accent" in low or "highlight" in low:
+            lines.append(f"  {v}: {c['accent']};")
+    lines.append("}")
+    if brand.get("font_family"):
+        lines.append(f"body {{ font-family: {brand['font_family']}; }}")
+    return "\n".join(lines) + "\n"
+
+
+def cmd_brand(args) -> None:
+    brand = load_brand()
+    web_root = find_web_root()
+    changed: list[str] = []
+    css_vars: set[str] = set()
+    missing_logo = not resolve(brand["logo_png"]) and not resolve(brand["logo_svg"])
+    if missing_logo:
+        log("WARNING: no logo found at brand.json paths — text/colors only this run.")
+
+    for path in iter_source_files(web_root):
+        ext = path.suffix.lower()
+        rel = str(path.relative_to(APP_DIR))
+        if ext in IMG_EXTS and ICON_NAME.search(path.name):
+            if replace_image(path, brand):
+                changed.append(rel)
+            continue
+        if ext not in TEXT_EXTS:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if ext in {".css", ".scss"}:
+            css_vars.update(re.findall(r"(--[\w-]+)\s*:", text))
+        new = replace_names(text, brand)
+        if path.name in {"manifest.json", "site.webmanifest", "manifest.webmanifest"}:
+            new = patch_manifest(new, brand)
+        if ext in {".html", ".htm"}:
+            new = patch_html(new, brand)
+        if new != text:
+            path.write_text(new, encoding="utf-8")
+            changed.append(rel)
+
+    public = web_root / "public"
+    public.mkdir(exist_ok=True)
+    # Logos used by the in-app mark (web/src/brand/marks.jsx).
+    (public / "brand").mkdir(exist_ok=True)
+    for key, name in (("logo_svg", "logo.svg"), ("logo_png", "logo.png")):
+        src = resolve(brand[key])
+        if src:
+            shutil.copyfile(src, public / "brand" / name)
+            changed.append(f"web/public/brand/{name}")
+    # Theme override stylesheet.
+    (public / "vanguard-theme.css").write_text(theme_css(brand, css_vars))
+    changed.append(str((public / "vanguard-theme.css").relative_to(APP_DIR)) + " (new)")
+
+    write_change_log(changed, brand)
+    log(f"Branding applied: {len(changed)} files changed (see VANGUARD-CHANGES.md).")
+
+
+def patch_manifest(text: str, brand: dict) -> str:
+    try:
+        m = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    m["name"] = brand["app_name"]
+    m["short_name"] = brand["short_name"]
+    m["description"] = brand["tagline"]
+    m["theme_color"] = brand["colors"]["primary"]
+    m["background_color"] = brand["colors"]["background"]
+    return json.dumps(m, indent=2) + "\n"
+
+
+def patch_html(text: str, brand: dict) -> str:
+    text = re.sub(r"<title>.*?</title>", f"<title>{brand['app_name']}</title>",
+                  text, count=1, flags=re.S | re.I)
+    text = re.sub(r'(<meta\s+name="theme-color"\s+content=")[^"]*(")',
+                  rf"\g<1>{brand['colors']['primary']}\g<2>", text, flags=re.I)
+    text = re.sub(r'(<meta\s+name="description"\s+content=")[^"]*(")',
+                  rf"\g<1>{brand['tagline']}\g<2>", text, flags=re.I)
+    if "vanguard-theme.css" not in text and "</head>" in text:
+        text = text.replace("</head>",
+                            '  <link rel="stylesheet" href="/vanguard-theme.css">\n</head>', 1)
+    return text
+
+
+def write_change_log(changed: list[str], brand: dict) -> None:
+    body = [
+        f"# Modifications by {brand['company']}", "",
+        f"{brand['app_name']} is a modified version of OpenTakeoff "
+        f"({UPSTREAM_REPO}), used under the Apache License 2.0.",
+        "The original LICENSE and NOTICE files are retained unchanged.", "",
+        f"Upstream source: tag apache-2.0-final (commit {UPSTREAM_COMMIT}),",
+        "the last Apache-2.0 release. Later upstream versions are AGPL-3.0 and are",
+        "NOT used here; do not merge them into this repository.", "",
+        "Manual changes: removed upstream analytics, Netlify forms, premium",
+        "sign-up prompts, upstream privacy/terms pages and marketing files;",
+        "replaced the logo marks, favicon, page title and static page.", "",
+        f"Files modified by takeoff.py brand on {date.today()}:", "",
+        *[f"- {c}" for c in sorted(set(changed))], "",
+    ]
+    path = APP_DIR / "VANGUARD-CHANGES.md"
+    if path.exists():  # keep entries from earlier runs
+        changed = changed + [l[2:] for l in path.read_text().splitlines() if l.startswith("- ")]
+    body = [l for l in body if not l.startswith("- ")][:-1]
+    body += [f"- {c}" for c in sorted(set(changed))] + [""]
+    path.write_text("\n".join(body))
+
+
+# --------------------------------------------------------------------------
+# build
+# --------------------------------------------------------------------------
+def cmd_build(args) -> None:
+    web_root = find_web_root()
+    run(["npm", "run", "build"], cwd=web_root)
+    dist = find_dist(web_root)
+    publish_licenses(dist, load_brand())
+    log(f"Built site: {dist.relative_to(HERE)}")
+
+
+def publish_licenses(dist: Path, brand: dict) -> None:
+    """Ship the license + notices with the site (Apache-2.0 §4a, §4d)."""
+    out = dist / "licenses"
+    out.mkdir(exist_ok=True)
+    items = []
+    for f in APP_DIR.iterdir():
+        if f.is_file() and (PROTECTED_FILES.match(f.name) or f.name == "VANGUARD-CHANGES.md"):
+            shutil.copyfile(f, out / (f.name + ("" if f.suffix else ".txt")))
+            items.append(f.name + ("" if f.suffix else ".txt"))
+    links = "\n".join(f'<li><a href="{i}">{i}</a></li>' for i in sorted(items))
+    (out / "index.html").write_text(f"""<!doctype html><html><head><meta charset="utf-8">
+<title>{brand['app_name']} — Open-source notices</title>
+<link rel="stylesheet" href="/vanguard-theme.css"></head>
+<body style="font-family:system-ui;max-width:720px;margin:40px auto;padding:0 16px">
+<h1>Open-source notices</h1>
+<p>{brand['app_name']} by {brand['company']} includes software licensed under the
+Apache License 2.0. The license and attribution notices are below.</p>
+<ul>{links}</ul></body></html>
+""")
+
+
+# --------------------------------------------------------------------------
+# serve (development / LAN hosting)
+# --------------------------------------------------------------------------
+class SPAHandler(http.server.SimpleHTTPRequestHandler):
+    """Static server that falls back to index.html for client-side routes."""
+    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
+                      ".js": "application/javascript", ".mjs": "application/javascript",
+                      ".wasm": "application/wasm", ".webmanifest": "application/manifest+json"}
+
+    def send_head(self):
+        path = Path(self.translate_path(self.path))
+        if not path.exists() and "." not in Path(self.path.split("?")[0]).name:
+            self.path = "/index.html"
+        return super().send_head()
+
+
+def cmd_serve(args) -> None:
+    dist = find_dist(find_web_root())
+    handler = functools.partial(SPAHandler, directory=str(dist))
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    with socketserver.ThreadingTCPServer((args.host, args.port), handler) as httpd:
+        log(f"Serving {load_brand()['app_name']} at http://{args.host}:{args.port}  (Ctrl+C to stop)")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            log("Stopped.")
+
+
+# --------------------------------------------------------------------------
+# docker (production hosting)
+# --------------------------------------------------------------------------
+def cmd_docker(args) -> None:
+    web_root = find_web_root()
+    rel = web_root.relative_to(APP_DIR).as_posix()
+    rel = "." if rel == "." else rel
+    (APP_DIR / "Dockerfile.vanguard").write_text(f"""# Vanguard Takeoff — production image
+FROM node:24-alpine AS build
+WORKDIR /src
+COPY . .
+RUN cd {rel} && (npm ci || npm install) && npm run build
+FROM nginx:alpine
+COPY nginx.vanguard.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /src/{rel}/dist /usr/share/nginx/html
+COPY LICENSE* NOTICE* VANGUARD-CHANGES.md /usr/share/nginx/html/licenses/
+EXPOSE 80
+""")
+    (APP_DIR / "nginx.vanguard.conf").write_text("""server {
+  listen 80;
+  root /usr/share/nginx/html;
+  index index.html;
+  add_header X-Content-Type-Options nosniff;
+  location / { try_files $uri $uri/ /index.html; }
+  location ~* \\.(js|css|png|svg|ico|woff2?)$ { expires 30d; access_log off; }
+}
+""")
+    log("Wrote Dockerfile.vanguard and nginx.vanguard.conf. Build and run with:")
+    log("  docker build -f Dockerfile.vanguard -t vanguard-takeoff . "
+        "&& docker run -d --restart unless-stopped -p 8081:80 vanguard-takeoff")
+
+
+# --------------------------------------------------------------------------
+def cmd_init_config(args) -> None:
+    if CONFIG_PATH.exists() and not args.force:
+        sys.exit("brand.json already exists (use --force to overwrite).")
+    CONFIG_PATH.write_text(json.dumps(DEFAULT_BRAND, indent=2) + "\n")
+    (HERE / "brand").mkdir(exist_ok=True)
+    log("Wrote brand.json and brand/ — put vanguard-logo.svg and vanguard-logo.png in brand/.")
+
+
+def cmd_all(args) -> None:
+    cmd_setup(args)
+    if not CONFIG_PATH.exists():
+        cmd_init_config(argparse.Namespace(force=False))
+    cmd_brand(args)
+    cmd_build(args)
+    cmd_serve(args)
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    for name, fn in [("setup", cmd_setup), ("brand", cmd_brand), ("build", cmd_build),
+                     ("serve", cmd_serve), ("docker", cmd_docker),
+                     ("init-config", cmd_init_config), ("all", cmd_all)]:
+        sp = sub.add_parser(name)
+        sp.set_defaults(func=fn)
+        if name in {"serve", "all"}:
+            sp.add_argument("--host", default="0.0.0.0",
+                            help="use 0.0.0.0 to reach it from other devices on your network")
+            sp.add_argument("--port", type=int, default=8081)
+        if name == "init-config":
+            sp.add_argument("--force", action="store_true")
+    args = p.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

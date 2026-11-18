@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="description" content="Interior drywall & ceiling takeoff" />
+    <title>Vanguard Takeoff</title>
+    <meta name="theme-color" content="#0B2545" />
+    <!-- Theme-before-paint. External (not inline) so the app can ship a strict
+         CSP with script-src 'self' — see public/theme-init.js and public/_headers.
+         Must stay render-blocking (no async/defer) to run before first paint. -->
+    <script src="/theme-init.js"></script>
+    <!-- The static page inside #root is for readers that run no JavaScript —
+         most AI crawlers, and anyone with scripts off. React replaces it on
+         mount; where scripts run it never paints (no flash before the app). -->
+    <style>
+      @media (scripting: enabled) { .ot-static { display: none; } }
+      .ot-static { max-width: 720px; margin: 0 auto; padding: 40px 20px; font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: #172031; }
+    </style>
+    <link rel="stylesheet" href="/vanguard-theme.css">
+</head>
+  <body>
+    <div id="root"><div class="ot-static">
+      <h1>Vanguard Takeoff</h1>
+      <p>Vanguard Drywall's takeoff and estimating app. It needs JavaScript enabled.</p>
+      <p><a href="/licenses/">Open-source notices</a></p>
+    </div></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

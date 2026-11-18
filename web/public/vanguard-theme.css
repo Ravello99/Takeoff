@@ -1,0 +1,11 @@
+/* Vanguard Drywall theme — generated 2026-11-17 */
+/* Light theme only; outranks the app's own :root rules regardless of load order */
+html:root:not([data-theme="dark"]) {
+  --vg-primary: #0B2545;
+  --vg-accent: #E4A11B;
+  --vg-bg: #FFFFFF;
+  --vg-text: #1A1A1A;
+  --cobalt: #0B2545;
+  --cobalt-deep: #0B2545;
+  --accent-contrast: #E4A11B;
+}
