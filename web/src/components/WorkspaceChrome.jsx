@@ -7,29 +7,30 @@ import "./workspaceChrome.css";
 // this component owns only navigation, search and disclosure state.
 export function WorkspaceChrome({ title, onOpen, onNavigate, navigationOpen, onTakeoffs, takeoffsOpen,
   onPremium, onWork, workOpen, workButtonRef, pending, running, onReport, onFocus, onClassic,
-  onControls, controlsOpen, onSearch, pinControl, panelTools, layoutMenu, helpMenu, fileMenu, scaleMenu, conditionControl, aids, history, action }) {
+  onControls, controlsOpen, onSearch, pinControl, panelTools, layoutMenu, helpMenu, fileMenu, scaleMenu, conditionControl, aids, history, action, simple = false }) {
+  // simple = Vanguard simple mode: only the everyday controls stay visible.
   return <>
     <header className="calm-header">
-      <strong className="calm-brand">open<span>takeoff</span></strong>
-      <div className="calm-project" title={title}><span>{title || "Untitled workspace"}</span><small>Compact workspace</small></div>
+      <strong className="calm-brand vg-brand"><img src="/brand/logo.png" alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} /><span className="vg-brand-name">Vanguard<em>Takeoff</em></span></strong>
+      <div className="calm-project" title={title}><span>{title || "Untitled project"}</span><small>Vanguard Drywall &amp; Acoustics</small></div>
       <div className="calm-header-actions">
-        <button type="button" onClick={onOpen} title="Open plans"><Icon name="plus" size={16} /><span>Open</span></button>
+        <button type="button" onClick={onOpen} title="Open plans — PDF, image, or a .zip plan set"><Icon name="plus" size={16} /><span>{simple ? "Open plans" : "Open"}</span></button>
         {fileMenu}
         <button type="button" aria-pressed={navigationOpen} onClick={onNavigate}><Icon name="sheets" size={16} />Sheets</button>
-        {pinControl}
-        <button type="button" onClick={onSearch} className="calm-search-trigger" title="Find a tool or action"><Icon name="search" size={16} /><span>Find an action</span><kbd>{keyText("⌘K")}</kbd></button>
-        <button type="button" aria-pressed={takeoffsOpen} onClick={onTakeoffs} title="Measured quantities, conditions, and supporting materials"><Icon name="product" size={16} />Quantities</button>
-        <button type="button" ref={workButtonRef} aria-expanded={workOpen} onClick={onWork} className="calm-work">Work{running ? <span className="calm-badge">Running</span> : pending > 0 ? <span className="calm-badge">{pending}</span> : null}</button>
-        {panelTools}
+        {!simple && pinControl}
+        <button type="button" onClick={onSearch} className="calm-search-trigger" title="Find a tool or action"><Icon name="search" size={16} /><span>{simple ? "Search" : "Find an action"}</span><kbd>{keyText("⌘K")}</kbd></button>
+        <button type="button" aria-pressed={takeoffsOpen} onClick={onTakeoffs} title="Your takeoffs — conditions, quantities and materials"><Icon name="product" size={16} />{simple ? "Takeoffs" : "Quantities"}</button>
+        {!simple && <button type="button" ref={workButtonRef} aria-expanded={workOpen} onClick={onWork} className="calm-work">Work{running ? <span className="calm-badge">Running</span> : pending > 0 ? <span className="calm-badge">{pending}</span> : null}</button>}
+        {!simple && panelTools}
         <button type="button" onClick={onReport} className="calm-report" data-tour="report"><Icon name="document" size={16} />Report</button>
-        {layoutMenu}{helpMenu}{onPremium && <button type="button" className="calm-premium" data-premium-trigger onClick={onPremium}>Request Premium</button>}<button type="button" onClick={onClassic} className="calm-classic" title="Return to the current layout without reloading the plan">Classic layout</button>
+        {!simple && layoutMenu}{helpMenu}{onPremium && <button type="button" className="calm-premium" data-premium-trigger onClick={onPremium}>Request Premium</button>}{!simple && <button type="button" onClick={onClassic} className="calm-classic" title="Return to the current layout without reloading the plan">Classic layout</button>}
       </div>
     </header>
     <div className="calm-context" aria-label="Current drawing settings">
       <div className="calm-context-scroll">{conditionControl}<span className="calm-separator" />{history}<span className="calm-separator" />{aids}</div>
       <div className="calm-context-pinned">{action}{scaleMenu}
         <button type="button" onClick={onFocus} title="Focus — hide chrome, keep measuring tools (F)"><Icon name="focus" size={16} /><span className="calm-focus-label">Focus</span></button>
-        <button type="button" onClick={onControls} aria-expanded={controlsOpen} title="All existing toolbar controls and settings">{controlsOpen ? "Close controls" : "All controls"}</button>
+        {!simple && <button type="button" onClick={onControls} aria-expanded={controlsOpen} title="All existing toolbar controls and settings">{controlsOpen ? "Close controls" : "All controls"}</button>}
       </div>
     </div>
   </>;

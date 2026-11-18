@@ -1,3 +1,4 @@
+import { useSimpleMode } from "../lib/simpleMode.js";
 // TakeoffsPanel — the docked conditions panel on the canvas's right edge
 // (reflows the canvas, not an overlay): every condition with its running
 // totals and inline properties, plus the template Library, material-library
@@ -411,6 +412,7 @@ function AddValueInput({ onAdd }) {
 // hatch-popover open state; everything else flows through the passed handlers.
 export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondParam, onAssignAttr, conditionColumns = [], layout = "stack", units = "imperial", rollInfo = null }) {
   const [hatchOpen, setHatchOpen] = useState(false);
+  const simple = useSimpleMode();   // Vanguard simple mode hides styling extras
   const activeColor = c.color || "#c96442";
   // Top-bar band ("row") only: the two palettes fold into two swatch buttons
   // with a popover each — one open at a time, Esc or a click outside closes.
@@ -454,16 +456,16 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
             onClick={() => setPaletteOpen((v) => (v === "line" ? null : "line"))}
             style={{ display: "flex", alignItems: "center", gap: 5, padding: "2px 7px 2px 4px", borderRadius: 0, border: `1px solid ${paletteOpen === "line" ? "var(--ink)" : "var(--ink-faint)"}`, background: "var(--paper-bright)", cursor: "pointer", fontSize: 10.5, color: "var(--ink-muted)" }}>
             <span aria-hidden style={{ width: 16, height: 16, display: "block", borderRadius: 4, border: "1px solid var(--ink-faint)", background: `linear-gradient(to top right, transparent calc(50% - 1.5px), ${activeColor} calc(50% - 1.5px), ${activeColor} calc(50% + 1.5px), transparent calc(50% + 1.5px))` }} />
-            Line
+            {simple ? "Colour" : "Line"}
           </button>
-          <button data-testid="fill-swatch" title={`Fill color — ${c.fill === NO_FILL || !c.fill ? "none" : c.fill}`} aria-expanded={paletteOpen === "fill"}
+          {!simple && <button data-testid="fill-swatch" title={`Fill color — ${c.fill === NO_FILL || !c.fill ? "none" : c.fill}`} aria-expanded={paletteOpen === "fill"}
             onClick={() => setPaletteOpen((v) => (v === "fill" ? null : "fill"))}
             style={{ display: "flex", alignItems: "center", gap: 5, padding: "2px 7px 2px 4px", borderRadius: 0, border: `1px solid ${paletteOpen === "fill" ? "var(--ink)" : "var(--ink-faint)"}`, background: "var(--paper-bright)", cursor: "pointer", fontSize: 10.5, color: "var(--ink-muted)" }}>
             {c.fill && c.fill !== NO_FILL
               ? <span aria-hidden style={{ width: 16, height: 16, display: "block", borderRadius: 4, background: c.fill, opacity: 0.55, border: "1px solid var(--ink-faint)" }} />
               : <span aria-hidden style={{ width: 16, height: 16, display: "block", borderRadius: 4, border: "1px solid var(--ink-faint)", fontSize: 9, lineHeight: "14px", textAlign: "center", color: "var(--c-danger)" }}>⦸</span>}
             Fill
-          </button>
+          </button>}
           {paletteOpen && (
             <div role="dialog" aria-label={paletteOpen === "line" ? "Line color" : "Fill color"}
               style={{ position: "absolute", top: 26, left: paletteOpen === "line" ? 0 : 62, zIndex: 30, display: "grid", gridTemplateColumns: "repeat(6, 16px)", gap: 4, padding: 8, background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", borderRadius: 0, boxShadow: "var(--shadow-pop)" }}>
@@ -472,7 +474,7 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
               )}
               {PALETTE.map((p) => {
                 const on = paletteOpen === "line" ? c.color === p : c.fill === p;
-                return <button key={p} title={p} onClick={() => { onUpdateCond(paletteOpen === "line" ? { color: p } : { fill: p }); setPaletteOpen(null); }}
+                return <button key={p} title={p} onClick={() => { onUpdateCond(paletteOpen === "line" ? (simple ? { color: p, fill: p } : { color: p }) : { fill: p }); setPaletteOpen(null); }}
                   style={{ width: 16, height: 16, borderRadius: 4, padding: 0, background: p, opacity: paletteOpen === "fill" ? 0.55 : 1, border: on ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />;
               })}
             </div>
@@ -481,19 +483,19 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
       ) : (
         <>
           <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-            <span style={{ color: "var(--ink-muted)", width: 26 }}>Line</span>
-            {PALETTE.map((p) => <button key={p} title={p} onClick={() => onUpdateCond({ color: p })} style={{ width: 16, height: 16, borderRadius: 4, background: p, border: c.color === p ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />)}
+            <span style={{ color: "var(--ink-muted)", width: simple ? 44 : 26 }}>{simple ? "Colour" : "Line"}</span>
+            {PALETTE.map((p) => <button key={p} title={p} onClick={() => onUpdateCond(simple ? { color: p, fill: p } : { color: p })} style={{ width: 16, height: 16, borderRadius: 4, background: p, border: c.color === p ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />)}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+          {!simple && <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
             <span style={{ color: "var(--ink-muted)", width: 26 }}>Fill</span>
             <button title="No fill" onClick={() => onUpdateCond({ fill: NO_FILL })} style={{ width: 16, height: 16, borderRadius: 4, background: "var(--paper-bright)", border: c.fill === NO_FILL ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 9, lineHeight: "12px", color: "var(--c-danger)" }}>⦸</button>
             {PALETTE.map((p) => <button key={p} title={p} onClick={() => onUpdateCond({ fill: p })} style={{ width: 16, height: 16, borderRadius: 4, background: p, opacity: 0.55, border: c.fill === p ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />)}
-          </div>
+          </div>}
         </>
       )}
       {isRow && rule()}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span style={{ display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
+        {!simple && <span style={{ display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
           <button onClick={() => setHatchOpen((v) => !v)} title="Choose a hatch pattern"
             style={{ display: "flex", alignItems: "center", gap: 5, padding: "2px 7px 2px 2px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", lineHeight: 0 }}>
             <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0 }}><HatchSwatch type={c.hatch || "solid"} line={c.color} fill={c.fill} /></span>
@@ -507,24 +509,24 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
               })}
             </div>
           )}
-        </span>
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Line style — the outline dash for this finish's floor-area and linear takeoffs (canvas + Marked Set PDF). Surface walls and deducts keep their own dashing.">
+        </span>}
+        {!simple && <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Line style — the outline dash for this finish's floor-area and linear takeoffs (canvas + Marked Set PDF). Surface walls and deducts keep their own dashing.">
           <span style={{ color: "var(--ink-muted)" }}>Style</span>
           <select name="condition-line-style" value={c.line_style || "solid"} onChange={(e) => onUpdateCond({ line_style: e.target.value })}
             style={{ fontSize: 11, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", padding: "1px 3px" }}>
             {LINE_STYLE_IDS.map((id) => <option key={id} value={id}>{LINE_STYLES[id].label}</option>)}
           </select>
-        </span>
+        </span>}
         <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={`Height (${heightUnit(units)}) — the default for NEW wall traces (SF = LF × H) and the vertical-SF display on floor areas. Walls keep the height they were drawn at — select a wall to change just that one.`}>
-          <Icon name="height" size={13} /><span style={{ color: "var(--ink-muted)" }}>H</span>
+          <Icon name="height" size={13} /><span style={{ color: "var(--ink-muted)" }}>{simple ? "Height" : "H"}</span>
           <DimParamInput name="condition-height-ft" internal={c.height_ft} units={units} kind="height" width={54}
             onCommit={(v) => onSetCondParam("height_ft", v)} />
         </span>
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={`Thickness (${thickUnit(units)}) — a Linear run with thickness also computes border/feature-strip SF = LF × T/12. Changing it re-flows existing linear runs.`}>
+        {!simple && <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={`Thickness (${thickUnit(units)}) — a Linear run with thickness also computes border/feature-strip SF = LF × T/12. Changing it re-flows existing linear runs.`}>
           <Icon name="thickness" size={13} /><span style={{ color: "var(--ink-muted)" }}>T</span>
           <DimParamInput name="condition-thickness-in" internal={c.thickness_in} units={units} kind="thickness" width={50}
             onCommit={(v) => onSetCondParam("thickness_in", v)} />
-        </span>
+        </span>}
         {/* Vanguard: drywall assembly inputs — Layers re-scales board & screws,
             O.C. re-scales studs / channel (lib/assembly.js). */}
         <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Drywall layers per side — re-figures this condition's board sheets and screws in the Report">
@@ -580,7 +582,7 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
           footage from the condition's floor areas; the readout below comes back
           from the canvas via rollInfo. All lengths stored in feet (the lib/units
           contract); seam/wall allowances are inch-native like the engine. */}
-      {!isRow && !hasRollSetup(c) && (
+      {!isRow && !simple && !hasRollSetup(c) && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, paddingTop: 6, marginTop: 1, borderTop: "1px solid var(--ink-faint)" }}>
           <select name="condition-roll-optin" value=""
             title="Make this condition a roll-goods material — its floor areas get figured into roll cuts (seams, order footage, a cut diagram)"
@@ -863,6 +865,7 @@ function TakeoffsPanel({
   hiddenConds = NO_HIDDEN, onToggleHidden,
 }) {
   const [panelTab, setPanelTab] = useState("takeoffs");       // "takeoffs" | "library" | "materials" | "columns"
+  const simple = useSimpleMode();
   const [condQuery, setCondQuery] = useState("");             // live filter over the condition list (transient, never persisted)
   const [matLibQuery, setMatLibQuery] = useState("");         // Materials tab search (transient; describes the browser-global library, so hydrate/epoch leaves it alone)
   const [closedGroups, setClosedGroups] = useState(() => new Set()); // collapsed tag-family groups in the grouped view
@@ -1158,7 +1161,7 @@ function TakeoffsPanel({
           );
         })()}
         {on && <ConditionAppearanceEditor cond={c} onUpdateCond={onUpdateCond} onSetCondParam={onSetCondParam} onAssignAttr={onAssignAttr} conditionColumns={conditionColumns} units={units} rollInfo={rollByCond?.get(c.id) || null} />}
-        {on && onDeriveTransitions && <TransitionsAction cond={c} sources={transitionSources} draft={transDraft} setDraft={setTransDraft}
+        {on && !simple && onDeriveTransitions && <TransitionsAction cond={c} sources={transitionSources} draft={transDraft} setDraft={setTransDraft}
           result={transResult} setResult={setTransResult} onDerive={onDeriveTransitions} onLocate2={onLocateTransition} />}
         {matOn && (
           <div style={{ padding: "8px 12px 10px", background: "var(--paper-cream)", borderTop: "1px solid var(--ink-faint)", fontSize: 11.5 }}>
@@ -1251,15 +1254,15 @@ function TakeoffsPanel({
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
         <div data-takeoffs-header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 12px", background: "var(--ink)", color: "var(--paper-cream)", flexShrink: 0 }}>
           {dockHandle}<span style={{ display: "inline-flex", gap: 2 }}>
-            {[["takeoffs", `Takeoffs · ${multiSheet ? "these sheets" : "this sheet"}`], ["library", `Library${templates.length ? ` (${templates.length})` : ""}`], ["materials", `Materials${matLib.length ? ` (${matLib.length})` : ""}`], ["columns", `Columns${conditionColumns.length ? ` (${conditionColumns.length})` : ""}`]].map(([id, label]) => (
+            {(simple ? [["takeoffs", "Takeoffs"], ["materials", `Materials${matLib.length ? ` (${matLib.length})` : ""}`], ["library", `Templates${templates.length ? ` (${templates.length})` : ""}`]] : [["takeoffs", `Takeoffs · ${multiSheet ? "these sheets" : "this sheet"}`], ["library", `Library${templates.length ? ` (${templates.length})` : ""}`], ["materials", `Materials${matLib.length ? ` (${matLib.length})` : ""}`], ["columns", `Columns${conditionColumns.length ? ` (${conditionColumns.length})` : ""}`]]).map(([id, label]) => (
               <button key={id} aria-pressed={panelTab === id} onClick={() => setPanelTab(id)}
                 style={{ padding: "3px 8px", border: "none", borderBottom: panelTab === id ? "2px solid var(--paper-cream)" : "2px solid transparent", background: "none", color: "var(--paper-cream)", opacity: panelTab === id ? 1 : 0.65, cursor: "pointer", fontWeight: 700, fontSize: 12.5 }}>{label}</button>
             ))}
           </span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            <button onClick={() => onPanelPrefs((p) => ({ ...p, strip: !p.strip }))}
+            {!simple && <button onClick={() => onPanelPrefs((p) => ({ ...p, strip: !p.strip }))}
               title="Compact strip — also show the conditions as a horizontal strip above the canvas (handy on small projects with the panel collapsed)"
-              style={{ background: panelPrefs.strip ? "var(--paper-cream)" : "none", border: "1px solid var(--paper-cream)", color: panelPrefs.strip ? "var(--ink)" : "var(--paper-cream)", fontSize: 9.5, fontFamily: "var(--f-mono)", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", padding: "2px 6px", lineHeight: 1.4 }}>strip</button>
+              style={{ background: panelPrefs.strip ? "var(--paper-cream)" : "none", border: "1px solid var(--paper-cream)", color: panelPrefs.strip ? "var(--ink)" : "var(--paper-cream)", fontSize: 9.5, fontFamily: "var(--f-mono)", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", padding: "2px 6px", lineHeight: 1.4 }}>strip</button>}
             <button onClick={onToggleCollapse} title="Collapse the panel (the ☰ button on the canvas edge brings it back)"
               style={{ background: "none", border: "none", color: "var(--paper-cream)", fontSize: 15, cursor: "pointer", lineHeight: 1 }}>»</button>
           </span>

@@ -1,3 +1,5 @@
+import { useSimpleMode, setSimpleMode } from "../lib/simpleMode.js";
+import "../styles/vanguardSimple.css";
 import { useAnnotationWorkbench } from '../components/AnnotationWorkbench.jsx';
 import { nativeTextRuns, markupPatch, applyMarkupPatch } from '../lib/annotationTools.js';
 import ReferencePins, { PinButton } from "../components/ReferencePins.jsx";
@@ -611,6 +613,7 @@ export default function TakeoffCanvas() {
   const [agentOpen, setAgentOpen] = useState(false);      // docked right-rail Agent panel
   const [conditionDetails, setConditionDetails] = useState(true);
   const workspacePrefs = useWorkspaceLayout();
+  const simple = useSimpleMode();   // Vanguard simple mode (lib/simpleMode.js)
   const [premiumOpen, setPremiumOpen] = useState(false);
   const premiumPrompted = useRef(false); // unprompted dialog: never twice in one app opening, even with storage blocked
   const workspaceLayout = workspacePrefs.enabled;
@@ -8536,6 +8539,18 @@ export default function TakeoffCanvas() {
       </button>
     );
   };
+  // Vanguard simple-mode tile: icon with a text label underneath.
+  const simpleTile = (id, iconName, text, help, shortcut, onArm, opts = {}) => {
+    const armed = opts.armed ?? (tool === id);
+    return (
+      <button key={id} type="button" className="vg-tile" onClick={onArm || (() => setTool(id))}
+        title={shortcut ? keyText(`${help} · ${shortcut}`) : help} aria-label={text} aria-pressed={armed}
+        style={armed ? { background: opts.tint || "var(--cobalt)", color: "var(--accent-contrast)" } : undefined}>
+        <Icon name={iconName} size={20} />
+        <span>{text}</span>
+      </button>
+    );
+  };
   const railLabel = (text) => (
     <span style={{ fontFamily: "var(--f-mono)", fontSize: "var(--fs-2xs)", letterSpacing: ".1em", color: "var(--ink-muted)", userSelect: "none", margin: "var(--sp-2) 0 2px" }}>{text}</span>
   );
@@ -8739,6 +8754,7 @@ export default function TakeoffCanvas() {
     { id: "layout", label: "Arrange and save your layout", group: "Workspace", run: () => setWorkspaceLayoutOpen(true) },
     { id: "fit", label: "Fit sheet to view", group: "View", disabled: !stage.w, run: () => fitToView(stage.w, stage.h) },
     { id: "focus", label: "Focus mode", group: "View", shortcut: "F", run: toggleFocusMode },
+    { id: "simple-toggle", label: simple ? "Show all tools (advanced)" : "Simple view", group: "View", run: () => setSimpleMode(!simple) },
     { id: "theme", label: workspaceArrangement.look === "light" ? "Backlit graphite" : "Studio light", group: "Appearance", run: () => workspacePrefs.update({ look: workspaceArrangement.look === "light" ? "graphite" : "light" }) },
     { id: "addcondition", label: "Add condition", group: "Conditions", run: addCondition },
     ...scaleItems.filter((item) => item.onSelect).map((item) => ({ ...item, id: `scale-${item.id}`, group: "Scale", run: item.onSelect })),
@@ -8779,7 +8795,7 @@ export default function TakeoffCanvas() {
   return (
     // .app-shell: the print stylesheet collapses this 100vh flex column while the report is open
     <div
-      className={`app-shell${workspaceLayout ? " workspace-calm premium-workspace" : ""}`}
+      className={`app-shell${workspaceLayout ? " workspace-calm premium-workspace" : ""}${simple ? " vg-simple" : ""}`}
       data-workspace-look={workspaceLayout ? workspaceArrangement.look : undefined}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer?.files); }}
@@ -8814,6 +8830,7 @@ export default function TakeoffCanvas() {
         onNavigate={() => setWorkspaceNavigationOpen((v) => !v)} navigationOpen={workspaceNavigationOpen}
         onTakeoffs={toggleTakeoffs} takeoffsOpen={takeoffsOpen} onWork={() => setAgentOpen((v) => !v)} workOpen={agentOpen} workButtonRef={workButtonRef}
         pending={shapes.filter((shape) => shape.origin?.reviewed === false).length} running={agentRunning}
+        simple={simple}
         onPremium={undefined} onReport={() => setShowReport(true)} onFocus={toggleFocusMode} onClassic={() => workspacePrefs.setEnabled(false)}
         onControls={() => setWorkspaceControlsOpen((v) => !v)} controlsOpen={workspaceControlsOpen} onSearch={() => setWorkspaceSearchOpen(true)}
         pinControl={pinButton}
@@ -8826,9 +8843,11 @@ export default function TakeoffCanvas() {
           {panelBtn(() => setShowRevisions(true), "revisions", "Revisions — save the takeoff at each bid revision, compare what moved", showRevisions)}
         </div>}
         layoutMenu={<button type="button" onClick={() => setWorkspaceLayoutOpen(true)} title="Arrange panels, lock positions, and save layouts"><Icon name="sliders" size={16} />Layout</button>}
-        helpMenu={<ToolMenu title="Learn Vanguard Takeoff" face={<span>Help</span>} onOpenChange={onMenuDepth} items={[
-          { id: "tour", label: "Guided first takeoff", onSelect: startTour },
+        helpMenu={<ToolMenu title="Help and view options" face={<span>Help</span>} onOpenChange={onMenuDepth} items={[
           { id: "guide", label: "How Vanguard Takeoff works", shortcut: "?", onSelect: () => setGuideOpen(true) },
+          { id: "simple-toggle", label: simple ? "Show all tools (advanced)" : "Simple view", onSelect: () => setSimpleMode(!simple) },
+          { id: "theme-toggle", label: workspaceArrangement.look === "light" ? "Dark theme" : "Light theme", onSelect: () => workspacePrefs.update({ look: workspaceArrangement.look === "light" ? "graphite" : "light" }) },
+          ...(simple ? [] : [{ id: "tour", label: "Guided first takeoff", onSelect: startTour }]),
         ]} />}
         fileMenu={<><ToolMenu title="Files and workspace" face={<span>File</span>} onOpenChange={onMenuDepth} items={sheetMenuItems} /><PresenceChip bridge={store.syncBridge} /><AccountChip note={cloudMode ? "Synced to Google Drive" : "Local workspace"} onOpenChange={onMenuDepth} /></>}
         conditionControl={<><label className="calm-condition-label" htmlFor="workspace-condition">Condition</label><select id="workspace-condition" value={activeCond || ""} onChange={(e) => activateCondition(e.target.value)} title={tool === "select" && selectedId ? "Reassign selected measurement" : "Condition for the next measurement"}>
@@ -8836,7 +8855,7 @@ export default function TakeoffCanvas() {
           <button type="button" onClick={addCondition} title="Add condition" aria-label="Add condition"><Icon name="plus" size={14} /></button>
           <button type="button" onClick={() => setWorkspaceDetailsOpen((v) => !v)} aria-expanded={workspaceDetailsOpen} disabled={!aCond}>Properties</button></>}
         history={<><button type="button" onClick={() => poly.length ? dropLastPoint() : undoShapeCommand()} title="Undo (⌘Z)" aria-label="Undo"><Icon name="undo" size={16} /></button><button type="button" onClick={redoShapeCommand} title="Redo (⇧⌘Z)" aria-label="Redo"><span style={{ display: "flex", transform: "scaleX(-1)" }}><Icon name="undo" size={16} /></span></button></>}
-        aids={<><button type="button" aria-pressed={tool === "zone"} onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))} title="Zone check — trace a region (an apartment, a wing) to read every condition's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."><Icon name="zone" size={15} />Zone</button><button type="button" aria-pressed={snapOn} onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"><Icon name="snap" size={15} />Snap</button><button type="button" aria-pressed={angleOn} onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides"><Icon name="angle" size={15} />45°</button>{draftMenu}<span className="calm-separator" />{annotations.control}</>}
+        aids={<>{!simple && <button type="button" aria-pressed={tool === "zone"} onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))} title="Zone check — trace a region (an apartment, a wing) to read every condition's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."><Icon name="zone" size={15} />Zone</button>}<button type="button" aria-pressed={snapOn} onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"><Icon name="snap" size={15} />Snap</button><button type="button" aria-pressed={angleOn} onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides"><Icon name="angle" size={15} />45°</button>{!simple && <>{draftMenu}<span className="calm-separator" />{annotations.control}</>}</>}
         action={finishOk && <button type="button" onClick={finishShape}>Finish ({poly.length})</button>}
         scaleMenu={<><button type="button" onClick={() => setUnits((u) => u === "metric" ? "imperial" : "metric")} title="Switch display units">{units === "metric" ? "m" : "ft"}</button><ToolMenu title={scaleTitle} onOpenChange={onScaleMenuDepth} face={<span data-tour="scale">{scaleFace}</span>} faceStyle={{ fontFamily: "var(--f-mono)", fontSize: 11.5, ...scaleFaceStyle }} menuStyle={{ minWidth: 250 }} items={scaleItems} /></>}
       />}
@@ -8852,7 +8871,7 @@ export default function TakeoffCanvas() {
             and nothing important is ever past the right edge. paddingTop 16
             keeps the cluster captions (top:-13) inside the scroll box. */}
         <div data-topbar-scroll style={{ display: "flex", gap: 7, alignItems: "center", flex: "1 1 0", minWidth: 0, padding: "16px 0 0", overflowX: "auto", overflowY: "hidden", scrollbarWidth: "thin", overscrollBehaviorX: "contain" }}>
-        <strong style={{ fontFamily: "var(--f-display)", fontSize: 15, color: "var(--ink)", letterSpacing: "-0.02em" }}>open<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>takeoff</span></strong>
+        <strong style={{ fontFamily: "var(--f-display)", fontSize: 15, color: "var(--ink)", letterSpacing: "-0.02em" }}>vanguard<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>takeoff</span></strong>
         <button type="button" onClick={() => fileInputRef.current?.click()} title="Open plans — PDF, image, or a .zip plan set (or just drag them onto the canvas)"
           style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
           <Icon name="plus" size={14} />Open</button>
@@ -9263,6 +9282,20 @@ export default function TakeoffCanvas() {
        {view === "canvas" && (
        <nav data-tool-rail data-dock-side={workspaceLayout ? workspaceArrangement.tools : undefined} role="toolbar" aria-label="Tools" style={{ order: workspaceLayout ? workspaceArrangement.tools === "right" ? 30 : -30 : undefined, width: "var(--rail-w)", flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: "var(--sp-1)", paddingTop: "var(--sp-2)", borderRight: "1px solid var(--ink-faint)", background: "var(--paper-bright)", overflowY: "auto", overflowX: "visible" }}>
          {workspaceDockHandle("tools", "Tools")}
+         {simple ? (<>
+           {/* Vanguard simple mode — big labelled tools, drywall-first order. */}
+           {simpleTile("select", "select", "Select", "Pick, move or edit a takeoff · drag empty plan to pan", "V")}
+           <span className="vg-rail-group">Measure</span>
+           {simpleTile("surface", "surface", "Wall", "Wall — click along the wall line; height × length = wall SF, length = LF", "S")}
+           {simpleTile("area", "area", "Area", "Area — click the corners of a ceiling or room; double-click or Enter to finish", "A")}
+           {simpleTile("rect", "rectTool", "Box", "Box — drag a rectangle for a quick area", "R")}
+           {simpleTile("linear", "linear", "Line", "Line — trims, bead, backing; double-click or Enter to finish", "L")}
+           {simpleTile("count", "count", "Count", "Count — click each item (frames, access panels)", "C")}
+           {simpleTile("symbol", "symbol", "Auto count", "Auto count — box one symbol, the app counts every match", "Y")}
+           <span className="vg-rail-group">Adjust</span>
+           {simpleTile("deduct", "deduct", "Cut out", "Cut out — remove an opening from an area", "D", null, { tint: "var(--c-danger)" })}
+           {simpleTile("calibrate", "calibrate", "Set scale", "Set scale — click two points of a known dimension", null)}
+         </>) : (<>
          {railLabel("SEL")}
          {railTile("select", "select", "Select — pick a takeoff, drag points; drag open canvas to pan", "V")}
          {railLabel("MEAS")}
@@ -9319,6 +9352,7 @@ export default function TakeoffCanvas() {
          {railTile("textcopy", "copyText", "Copy text — click two corners around a note or schedule; its text goes on your clipboard", null, armCopyText)}
          {railLabel("CAL")}
          {railTile("calibrate", "calibrate", "Calibrate — click two points of a known dimension", null)}
+         </>)}
        </nav>
        )}
        {/* docked LEFT panel — one of Markups/Stamps/RFIs at a time. Reflows the

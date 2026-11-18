@@ -1,6 +1,6 @@
 // Personal chrome only. Never include this in a project, profile, or sync payload.
 export const WORKSPACE_LAYOUT_KEY = "ot.workspace-layout.v1";
-export const DEFAULT_LAYOUT = Object.freeze({ locked: true, tools: "left", sheets: "left", work: "right", takeoffs: "right", workWidth: 360, sheetWidth: 264, counter: false, readout: false, palette: false, look: "graphite", backlight: 45 });
+export const DEFAULT_LAYOUT = Object.freeze({ locked: true, tools: "left", sheets: "left", work: "right", takeoffs: "right", workWidth: 360, sheetWidth: 264, counter: false, readout: false, palette: false, look: "light", backlight: 45 });
 export const DOCKS = Object.freeze(["tools", "sheets", "work", "takeoffs"]);
 export function normalizeLayout(value) {
   const v = value && typeof value === "object" ? value : {};

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Z } from "../lib/ui.js";
 import { DEFAULT_LAYOUT, WORKSPACE_LAYOUT_KEY, moveDock, normalizeLayout, readWorkspacePreferences } from "../lib/workspaceLayout.js";
+import { migrateWorkspacePrefs } from "../lib/simpleMode.js";
 
 export function useWorkspaceLayout() {
   const [prefs, setPrefs] = useState(() => {
     let raw = null;
+    migrateWorkspacePrefs(WORKSPACE_LAYOUT_KEY);   // Vanguard: land everyone on the compact light layout once
     try { raw = localStorage.getItem(WORKSPACE_LAYOUT_KEY); } catch { /* session-only layout */ }
     const pref = readWorkspacePreferences(raw);
     if (["calm", "premium"].includes(new URLSearchParams(window.location.search).get("workspace"))) pref.enabled = true;

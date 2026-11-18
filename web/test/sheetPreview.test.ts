@@ -27,6 +27,6 @@ test('floating readout is an independent, persisted opt-in', () => {
   assert.equal(prefs.layout.look,'hud');
   assert.equal(prefs.layout.backlight,80);
   assert.equal(normalizeLayout({readout:'false',look:'unknown',backlight:200}).backlight,100);
-  assert.equal(normalizeLayout({readout:'false',look:'unknown'}).look,'graphite');
+  assert.equal(normalizeLayout({readout:'false',look:'unknown'}).look,'light');   // Vanguard default: light theme
   assert.equal(normalizeLayout({readout:'false'}).readout,false);
 });
