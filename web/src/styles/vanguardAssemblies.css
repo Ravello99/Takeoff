@@ -1,0 +1,80 @@
+/* Vanguard — Assembly builder page */
+.va-page {
+  --vp-navy: #0B2556; --vp-line: #DDE2EA; --vp-muted: #5E6878; --vp-bg: #F4F5F7;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1C2430;
+  background: var(--vp-bg); min-height: calc(100vh - 57px); padding: 20px 24px; box-sizing: border-box;
+}
+.va-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 14px; }
+.va-head h1 { margin: 0 0 4px; font-size: 26px; }
+.va-head p { margin: 0; }
+.va-status { margin-left: 8px; font-size: 12px; color: #2f7d54; }
+.va-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; background: #fff; border: 1px solid #D5DFF0; border-left: 4px solid var(--vp-navy); border-radius: 10px; padding: 14px 18px; margin-bottom: 14px; }
+.va-banner p { margin: 4px 0 0; font-size: 13px; }
+.va-grid { display: grid; grid-template-columns: 270px minmax(0, 1fr) 300px; gap: 14px; height: calc(100vh - 175px); min-height: 520px; }
+@media (max-width: 1100px) { .va-grid { grid-template-columns: 1fr; height: auto; } }
+.va-col { background: #fff; border: 1px solid var(--vp-line); border-radius: 12px; display: flex; flex-direction: column; min-height: 0; }
+.va-scroll { overflow: auto; flex: 1; min-height: 0; padding: 0 8px 8px; }
+.va-search { margin: 10px; padding: 8px 10px; border: 1px solid var(--vp-line); border-radius: 8px; font: inherit; font-size: 14px; }
+.va-h2 { font-size: 15px; margin: 4px 0 8px; }
+
+/* list */
+.va-list h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--vp-muted); margin: 10px 6px 4px; }
+.va-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border: 1px solid transparent; border-radius: 8px; background: none; cursor: pointer; text-align: left; font: inherit; color: inherit; }
+.va-item:hover { background: #F0F2F6; }
+.va-item.is-on { border-color: var(--vp-navy); background: #EEF2FA; }
+.va-item span { display: flex; flex-direction: column; min-width: 0; }
+.va-item strong { font-size: 14px; }
+.va-item small { font-size: 12px; color: var(--vp-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
+.va-new { border-top: 1px solid var(--vp-line); padding: 10px; }
+.va-new-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+.va-new-row .vp-btn { padding: 7px 8px; font-size: 13px; }
+
+/* editor */
+.va-editor { padding: 16px 18px; overflow: auto; }
+.va-editor-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.va-colors { display: flex; gap: 5px; flex-wrap: wrap; }
+.va-color { width: 22px; height: 22px; border-radius: 6px; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.va-color.is-on { border-color: #1C2430; box-shadow: 0 0 0 2px #fff inset; }
+.va-editor-actions { display: flex; gap: 4px; }
+.va-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px 12px; margin-bottom: 16px; }
+.va-f { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--vp-muted); }
+.va-f input, .va-f select, .va-f textarea { font: inherit; font-size: 14px; font-weight: 400; color: #1C2430; padding: 7px 9px; border: 1px solid var(--vp-line); border-radius: 8px; background: #fff; }
+.va-tag input { font-weight: 700; }
+.va-desc { grid-column: 1 / -1; }
+.va-desc textarea { resize: vertical; }
+
+.va-drop { border: 2px dashed var(--vp-line); border-radius: 10px; padding: 6px; min-height: 90px; transition: border-color .12s, background .12s; }
+.va-drop.is-over { border-color: var(--vp-navy); background: #F3F6FC; }
+.va-drop-hint { text-align: center; color: var(--vp-muted); margin: 28px 0; font-size: 14px; }
+.va-mat { display: grid; grid-template-columns: 18px minmax(160px, 1fr) auto 170px 26px; gap: 6px 8px; align-items: center; padding: 7px 6px; border-radius: 8px; background: #fff; border: 1px solid transparent; }
+.va-mat + .va-mat { border-top-color: #EEF0F4; }
+.va-mat:hover { border-color: var(--vp-line); }
+.va-mat.is-dragging { opacity: .4; }
+.va-grip { cursor: grab; color: #A0A8B5; user-select: none; }
+.va-mat input, .va-mat select, .va-newmat input, .va-newmat select { font: inherit; font-size: 13px; padding: 5px 7px; border: 1px solid var(--vp-line); border-radius: 6px; background: #fff; color: #1C2430; min-width: 0; }
+.va-mat-name { font-weight: 600; }
+.va-rate { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--vp-muted); white-space: nowrap; }
+.va-unit { width: 58px; }
+.va-per { width: 72px; }
+.va-note { grid-column: 2 / -1; font-size: 12px !important; color: var(--vp-muted) !important; border-style: dashed !important; }
+.va-remove, .va-add { border: none; background: none; cursor: pointer; font-size: 18px; line-height: 1; color: #98A2B3; padding: 2px 4px; border-radius: 6px; }
+.va-remove:hover { color: #B42318; background: #FEF3F2; }
+.va-add { color: var(--vp-navy); font-weight: 700; }
+.va-add:hover { background: #EEF2FA; }
+@media (max-width: 1400px) { .va-mat { grid-template-columns: 18px 1fr 26px; } .va-mat .va-rate, .va-mat .va-scale { grid-column: 2 / 3; } }
+
+.va-preview { margin-top: 16px; background: #F6F8FC; border: 1px solid #D5DFF0; border-radius: 10px; padding: 12px 16px; }
+.va-preview h3 { margin: 0 0 8px; font-size: 13.5px; }
+.va-preview ul { margin: 0; padding-left: 18px; columns: 2; font-size: 13px; line-height: 1.7; }
+
+/* library */
+.va-lib { padding: 12px 6px 10px; }
+.va-lib .va-h2 { margin: 0 10px; }
+.va-lib-empty { padding: 4px 12px 10px; }
+.va-libitem { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--vp-line); border-radius: 8px; margin-bottom: 6px; background: #fff; cursor: grab; }
+.va-libitem:hover { border-color: var(--vp-navy); box-shadow: 0 2px 8px rgba(11,37,86,.08); }
+.va-libtext { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.va-libtext strong { font-size: 13px; }
+.va-libtext small { font-size: 11.5px; color: var(--vp-muted); }
+.va-newmat { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-top: 1px solid var(--vp-line); }
+.va-newmat-btn { margin: 8px 10px 0; }

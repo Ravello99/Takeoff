@@ -101,7 +101,7 @@ export default function LiveCounter({ rows, onActivate }) {
             <span style={{ fontSize: 10, color: "var(--ink-muted)" }}>{active.shapes} shape{active.shapes === 1 ? "" : "s"}</span>
           </div>
           {others.map((r) => (
-            <button key={r.id} type="button" onClick={() => onActivate?.(r.id)} title="Make this the active condition"
+            <button key={r.id} type="button" onClick={() => onActivate?.(r.id)} title="Make this the active assembly"
               style={{ display: "flex", alignItems: "center", gap: 7, border: "none", background: "none", cursor: "pointer", padding: "2px 0", textAlign: "left" }}>
               <span style={{ width: 7, height: 7, background: r.color || "var(--ink-faint)", flexShrink: 0 }} />
               <span style={{ fontSize: 11, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>{r.tag}</span>

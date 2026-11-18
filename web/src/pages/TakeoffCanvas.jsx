@@ -1,3 +1,4 @@
+import AssemblyPicker, { TOOL_MEASURE } from "../components/vanguard/AssemblyPicker.jsx";
 import { useSimpleMode, setSimpleMode } from "../lib/simpleMode.js";
 import "../styles/vanguardSimple.css";
 import { useAnnotationWorkbench } from '../components/AnnotationWorkbench.jsx';
@@ -619,6 +620,7 @@ export default function TakeoffCanvas() {
   const [conditionDetails, setConditionDetails] = useState(true);
   const workspacePrefs = useWorkspaceLayout();
   const simple = useSimpleMode();   // Vanguard simple mode (lib/simpleMode.js)
+  const [toolPick, setToolPick] = useState(null);   // Vanguard: { tool, top } — assembly picker beside the rail
   const [premiumOpen, setPremiumOpen] = useState(false);
   const premiumPrompted = useRef(false); // unprompted dialog: never twice in one app opening, even with storage blocked
   const workspaceLayout = workspacePrefs.enabled;
@@ -6534,7 +6536,7 @@ export default function TakeoffCanvas() {
   // ONE condition-minting path — the human +condition button and the agent's
   // create_condition tool both come through here, so the field set and the
   // color/hatch auto-rotation can never drift between the two.
-  function mintCondition(tag) {
+  function mintCondition(tag, extra = null) {
     // read the LIVE list (agentStateRef) — the agent can mint mid-run, when the
     // render-scope `conditions` closure is stale; the ref is updated per render
     // AND immediately below, so two mints in one model turn rotate correctly.
@@ -6549,15 +6551,16 @@ export default function TakeoffCanvas() {
       multiplier: 1,        // ×N for identical repeated units (measure one, multiply)
       waste_pct: 0,         // flooring waste allowance (manual) — applied in the Report
       materials: [],        // supporting materials (adhesive, grout, …) with coverage rates
+      ...(extra || {}),     // Vanguard: e.g. { measure: "wall" } from the tool picker
     };
     agentStateRef.current = { ...agentStateRef.current, conditions: [...cs, c] };
     setConditions((prev) => [...prev, c]);
     return c;
   }
-  function addCondition() {
-    const tag = (window.prompt("Finish tag for this condition (e.g. LVT-1):") || "").trim();
+  function addCondition(measure = null) {
+    const tag = (window.prompt("Name or tag for the new assembly (e.g. W7 or 1A — match the drawings):") || "").trim();
     if (!tag) return;
-    const c = mintCondition(tag);
+    const c = mintCondition(tag, typeof measure === "string" ? { measure, ...(measure === "wall" ? { height_ft: 10, board_layers: 1, stud_oc_in: 16 } : {}) } : null);
     activateCondition(c.id, { reassign: false });   // no reassign affordance on +condition; still dismisses a live bulk selection
   }
 
@@ -8113,7 +8116,7 @@ export default function TakeoffCanvas() {
     return r ? `${fmtCheckLen(r.w * upp, units)} × ${fmtCheckLen(r.h * upp, units)}` : null;
   };
   const dimsLine = (d, h) => d ? (
-    <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }} title="Smallest rectangle around the shape — length × width, and the condition's H">
+    <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }} title="Smallest rectangle around the shape — length × width, and the assembly's H">
       {d}{h > 0 ? ` × ${fmtCheckLen(h, units)}` : ""} <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>L × W{h > 0 ? " × H" : ""}</span>
     </div>
   ) : null;
@@ -8338,6 +8341,7 @@ export default function TakeoffCanvas() {
     ...(c.drop_ft != null ? { drop_ft: c.drop_ft } : {}),
     ...(c.board_layers != null ? { board_layers: c.board_layers } : {}),
     ...(c.stud_oc_in != null ? { stud_oc_in: c.stud_oc_in } : {}),
+    ...(c.measure ? { measure: c.measure } : {}),
     ...(c.spec ? { spec: { ...c.spec } } : {}),
     ...(c.laborType != null ? { laborType: c.laborType } : {}),
     ...(c.subfloorType != null ? { subfloorType: c.subfloorType } : {}),
@@ -8548,7 +8552,13 @@ export default function TakeoffCanvas() {
   const simpleTile = (id, iconName, text, help, shortcut, onArm, opts = {}) => {
     const armed = opts.armed ?? (tool === id);
     return (
-      <button key={id} type="button" className="vg-tile" onClick={onArm || (() => setTool(id))}
+      <button key={id} type="button" className="vg-tile"
+        onClick={onArm || ((e) => {
+          setTool(id);
+          // measuring tools ask which assembly to use (Esc / click away keeps the current one)
+          if (TOOL_MEASURE[id]) setToolPick({ tool: id, top: e.currentTarget.getBoundingClientRect().top });
+          else setToolPick(null);
+        })}
         title={shortcut ? keyText(`${help} · ${shortcut}`) : help} aria-label={text} aria-pressed={armed}
         style={armed ? { background: opts.tint || "var(--cobalt)", color: "var(--accent-contrast)" } : undefined}>
         <Icon name={iconName} size={20} />
@@ -8588,12 +8598,12 @@ export default function TakeoffCanvas() {
   sheetMenuItems.push({ id: "gallery", icon: "sheets", label: "Open gallery…", shortcut: "G", onSelect: () => setView("gallery") });
   sheetMenuItems.push({
     id: "export-takeoff", icon: "document", label: "Export takeoff…",
-    title: "Save this whole takeoff to a JSON file on your computer — every shape, condition, scale, markup and RFI, in the app's own format. Import takeoff reads it back as an editable takeoff (the plan PDF isn't in the file: open it first, then import).",
+    title: "Save this whole takeoff to a JSON file on your computer — every shape, assembly, scale, markup and RFI, in the app's own format. Import takeoff reads it back as an editable takeoff (the plan PDF isn't in the file: open it first, then import).",
     onSelect: exportTakeoffFile,
   });
   sheetMenuItems.push({
     id: "import-takeoff", icon: "document", label: "Import takeoff…",
-    title: "Load a takeoff JSON — the app's own export or an agent session's export_takeoff. Machine shapes land dashed in their condition colors for your review; on merge, your calibration, conditions, and workspace win.",
+    title: "Load a takeoff JSON — the app's own export or an agent session's export_takeoff. Machine shapes land dashed in their assembly colors for your review; on merge, your calibration, assemblies, and workspace win.",
     onSelect: () => importInputRef.current?.click(),
   });
   sheetMenuItems.push({
@@ -8604,7 +8614,7 @@ export default function TakeoffCanvas() {
   sheetMenuItems.push({ section: "Profile — your templates, stamps & report setup" });
   sheetMenuItems.push({
     id: "export-profile", icon: "document", label: "Export profile…",
-    title: "Save your working environment — condition templates, material library, stamps, report templates/theme/columns — as one portable .otprofile. Import it on another machine or hand a company setup to another estimator; project takeoffs are never in it.",
+    title: "Save your working environment — assembly templates, material library, stamps, report templates/theme/columns — as one portable .otprofile. Import it on another machine or hand a company setup to another estimator; project takeoffs are never in it.",
     onSelect: exportProfileFile,
   });
   sheetMenuItems.push({
@@ -8761,7 +8771,7 @@ export default function TakeoffCanvas() {
     { id: "focus", label: "Focus mode", group: "View", shortcut: "F", run: toggleFocusMode },
     { id: "simple-toggle", label: simple ? "Show all tools (advanced)" : "Simple view", group: "View", run: () => setSimpleMode(!simple) },
     { id: "theme", label: workspaceArrangement.look === "light" ? "Backlit graphite" : "Studio light", group: "Appearance", run: () => workspacePrefs.update({ look: workspaceArrangement.look === "light" ? "graphite" : "light" }) },
-    { id: "addcondition", label: "Add condition", group: "Conditions", run: addCondition },
+    { id: "addcondition", label: "Add assembly", group: "Assemblies", run: addCondition },
     ...scaleItems.filter((item) => item.onSelect).map((item) => ({ ...item, id: `scale-${item.id}`, group: "Scale", run: item.onSelect })),
     ...sheetMenuItems.filter((item) => item.onSelect).map((item) => ({ ...item, id: `file-${item.id}`, group: "Plans and files", run: item.onSelect })),
     ...workspaceSheets.map((sheet) => ({ id: `sheet-${sheet.key}`, label: sheet.label, group: sheet.file, run: () => openSheets([sheet.key], false) })),
@@ -8837,6 +8847,7 @@ export default function TakeoffCanvas() {
         pending={shapes.filter((shape) => shape.origin?.reviewed === false).length} running={agentRunning}
         simple={simple}
         onProjects={store.kind === "server" ? closeProject : undefined}
+        onAssemblies={store.kind === "server" ? () => window.open("/assemblies", "_blank", "noopener") : undefined}
         onPremium={undefined} onReport={() => setShowReport(true)} onFocus={toggleFocusMode} onClassic={() => workspacePrefs.setEnabled(false)}
         onControls={() => setWorkspaceControlsOpen((v) => !v)} controlsOpen={workspaceControlsOpen} onSearch={() => setWorkspaceSearchOpen(true)}
         pinControl={pinButton}
@@ -8856,16 +8867,16 @@ export default function TakeoffCanvas() {
           ...(simple ? [] : [{ id: "tour", label: "Guided first takeoff", onSelect: startTour }]),
         ]} />}
         fileMenu={<><ToolMenu title="Files and workspace" face={<span>File</span>} onOpenChange={onMenuDepth} items={sheetMenuItems} /><PresenceChip bridge={store.syncBridge} /><AccountChip note={cloudMode ? "Synced to Google Drive" : "Local workspace"} onOpenChange={onMenuDepth} /></>}
-        conditionControl={<><label className="calm-condition-label" htmlFor="workspace-condition">Condition</label><select id="workspace-condition" value={activeCond || ""} onChange={(e) => activateCondition(e.target.value)} title={tool === "select" && selectedId ? "Reassign selected measurement" : "Condition for the next measurement"}>
-          {!conditions.length && <option value="">No conditions</option>}{conditions.map((c) => <option key={c.id} value={c.id}>{c.finish_tag}</option>)}</select>
-          <button type="button" onClick={addCondition} title="Add condition" aria-label="Add condition"><Icon name="plus" size={14} /></button>
+        conditionControl={<><label className="calm-condition-label" htmlFor="workspace-condition">Assembly</label><select id="workspace-condition" value={activeCond || ""} onChange={(e) => activateCondition(e.target.value)} title={tool === "select" && selectedId ? "Reassign selected measurement" : "Condition for the next measurement"}>
+          {!conditions.length && <option value="">No assemblies</option>}{conditions.map((c) => <option key={c.id} value={c.id}>{c.finish_tag}</option>)}</select>
+          <button type="button" onClick={addCondition} title="Add assembly" aria-label="Add assembly"><Icon name="plus" size={14} /></button>
           <button type="button" onClick={() => setWorkspaceDetailsOpen((v) => !v)} aria-expanded={workspaceDetailsOpen} disabled={!aCond}>Properties</button></>}
         history={<><button type="button" onClick={() => poly.length ? dropLastPoint() : undoShapeCommand()} title="Undo (⌘Z)" aria-label="Undo"><Icon name="undo" size={16} /></button><button type="button" onClick={redoShapeCommand} title="Redo (⇧⌘Z)" aria-label="Redo"><span style={{ display: "flex", transform: "scaleX(-1)" }}><Icon name="undo" size={16} /></span></button></>}
-        aids={<>{!simple && <button type="button" aria-pressed={tool === "zone"} onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))} title="Zone check — trace a region (an apartment, a wing) to read every condition's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."><Icon name="zone" size={15} />Zone</button>}<button type="button" aria-pressed={snapOn} onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"><Icon name="snap" size={15} />Snap</button><button type="button" aria-pressed={angleOn} onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides"><Icon name="angle" size={15} />45°</button>{!simple && <>{draftMenu}<span className="calm-separator" />{annotations.control}</>}</>}
+        aids={<>{!simple && <button type="button" aria-pressed={tool === "zone"} onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))} title="Zone check — trace a region (an apartment, a wing) to read every assembly's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."><Icon name="zone" size={15} />Zone</button>}<button type="button" aria-pressed={snapOn} onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"><Icon name="snap" size={15} />Snap</button><button type="button" aria-pressed={angleOn} onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides"><Icon name="angle" size={15} />45°</button>{!simple && <>{draftMenu}<span className="calm-separator" />{annotations.control}</>}</>}
         action={finishOk && <button type="button" onClick={finishShape}>Finish ({poly.length})</button>}
         scaleMenu={<><button type="button" onClick={() => setUnits((u) => u === "metric" ? "imperial" : "metric")} title="Switch display units">{units === "metric" ? "m" : "ft"}</button><ToolMenu title={scaleTitle} onOpenChange={onScaleMenuDepth} face={<span data-tour="scale">{scaleFace}</span>} faceStyle={{ fontFamily: "var(--f-mono)", fontSize: 11.5, ...scaleFaceStyle }} menuStyle={{ minWidth: 250 }} items={scaleItems} /></>}
       />}
-      {workspaceLayout && !workspaceArrangement.readout && selShape?.measure_role === "surface_area" && <div className="calm-property-editor"><label>Selected wall height <input aria-label="Selected wall height" type="number" min="0" step={heightStep(units)} value={shapeHDraft ?? dimInputStr(selShape.height_ft, units, "height")} onChange={(e) => { setShapeHDraft(e.target.value); setShapeHeight(e.target.value); }} onBlur={() => { if (shapeHDraft != null) setShapeHeight(shapeHDraft); setShapeHDraft(null); }} /></label><span>{heightUnit(units)} → {fa(selShape.computed?.area_sf || 0)}</span><button type="button" onClick={clearShapeHeight}>Use condition height</button></div>}
+      {workspaceLayout && !workspaceArrangement.readout && selShape?.measure_role === "surface_area" && <div className="calm-property-editor"><label>Selected wall height <input aria-label="Selected wall height" type="number" min="0" step={heightStep(units)} value={shapeHDraft ?? dimInputStr(selShape.height_ft, units, "height")} onChange={(e) => { setShapeHDraft(e.target.value); setShapeHeight(e.target.value); }} onBlur={() => { if (shapeHDraft != null) setShapeHeight(shapeHDraft); setShapeHDraft(null); }} /></label><span>{heightUnit(units)} → {fa(selShape.computed?.area_sf || 0)}</span><button type="button" onClick={clearShapeHeight}>Use assembly height</button></div>}
       {!focusMode && workspaceLayout && workspaceDetailsOpen && aCond && <div className="calm-property-editor"><strong>{aCond.finish_tag}</strong><ConditionAppearanceEditor cond={aCond} onUpdateCond={updateCond} onSetCondParam={setCondParam} onAssignAttr={assignAttr} conditionColumns={conditionColumns} layout="row" units={units} /><button type="button" onClick={() => setWorkspaceDetailsOpen(false)}>Close properties</button></div>}
       {workspaceLayout && <><WorkspaceCommandMenu open={workspaceSearchOpen} onClose={() => setWorkspaceSearchOpen(false)} actions={workspaceActions} onOpenChange={onMenuDepth} /><WorkspaceLayoutDialog open={workspaceLayoutOpen} onClose={() => setWorkspaceLayoutOpen(false)} prefs={workspacePrefs} onOpenChange={onMenuDepth} /></>}
       {!focusMode && (!workspaceLayout || workspaceControlsOpen) && (
@@ -8937,7 +8948,7 @@ export default function TakeoffCanvas() {
             </button>
           )}
           <button onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))}
-            title="Zone check — trace a region (an apartment, a wing) to read every condition's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."
+            title="Zone check — trace a region (an apartment, a wing) to read every assembly's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${tool === "zone" ? "var(--cobalt)" : "var(--ink-faint)"}`, background: tool === "zone" ? "var(--cobalt)" : "transparent", color: tool === "zone" ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
             <Icon name="zone" size={15} />Zone
           </button>
@@ -9051,7 +9062,7 @@ export default function TakeoffCanvas() {
           style={{ minHeight: "var(--ctl-m)", padding: "var(--sp-1) var(--sp-3)", border: "1px solid var(--cobalt)", background: agentOpen ? "var(--cobalt)" : "transparent", color: agentOpen ? "var(--accent-contrast)" : "var(--cobalt)", cursor: "pointer", fontSize: "var(--fs-s)", fontWeight: 600 }}>
           Work{agentRunning ? " · Working" : shapes.some((s) => s.origin?.reviewed === false) ? ` · ${shapes.filter((s) => s.origin?.reviewed === false).length}` : ""}
         </button>
-        <button data-tour="report" onClick={() => setShowReport(true)} disabled={!conditions.length} title="Open the takeoff report — per-condition breakdown with waste, plus CSV / JSON export."
+        <button data-tour="report" onClick={() => setShowReport(true)} disabled={!conditions.length} title="Open the takeoff report — per-assembly breakdown with waste, plus CSV / JSON export."
           style={{ padding: "8px 14px", border: "none", background: conditions.length ? "var(--ink)" : "var(--text-faint)", color: "var(--paper-bright)", cursor: conditions.length ? "pointer" : "default", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase" }}>Report</button>
         {/* ⋯ overflow — rarely-used project controls, so the row never wraps
             and nothing shifts position mid-work (issue #61's contract). */}
@@ -9102,10 +9113,10 @@ export default function TakeoffCanvas() {
           onDrop={(e) => { if (!e.dataTransfer.types.includes(CONDITION_DND_MIME)) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData(CONDITION_DND_MIME); if (id) pinToPalette(id); }}
           style={{ padding: "5px 14px", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-bright)" }}>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            <span title="Quick-access conditions — drag a condition here (or use a row's pushpin) to pin it, up to 9. Press 1–9 to activate by this order; click a chip to activate; double-click to open the panel."
-              style={{ fontFamily: "var(--f-mono)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--ink-muted)" }}>Conditions</span>
+            <span title="Quick-access assemblies — drag an assembly here (or use a row's pushpin) to pin it, up to 9. Press 1–9 to activate by this order; click a chip to activate; double-click to open the panel."
+              style={{ fontFamily: "var(--f-mono)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--ink-muted)" }}>Assemblies</span>
             {paletteConds.length === 0 ? (
-              <span style={{ fontSize: 11.5, color: "var(--ink-muted)", fontStyle: "italic", padding: "3px 8px", border: "1px dashed var(--ink-faint)" }}>drag conditions here (or pin a row) for 1-9 one-click access</span>
+              <span style={{ fontSize: 11.5, color: "var(--ink-muted)", fontStyle: "italic", padding: "3px 8px", border: "1px dashed var(--ink-faint)" }}>drag assemblies here (or pin a row) for 1-9 one-click access</span>
             ) : paletteConds.map((c) => {
               const on = c.id === activeCond;
               const reassign = tool === "select" && selectedId;
@@ -9134,8 +9145,8 @@ export default function TakeoffCanvas() {
               <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontStyle: "italic" }}>full ({PALETTE_MAX})</span>
             )}
             {/* add a condition without opening the (now-collapsed) sidebar */}
-            <button type="button" onClick={addCondition} title="Add a new condition"
-              style={{ padding: "3px 9px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 12, color: "var(--ink-muted)" }}>+ condition</button>
+            <button type="button" onClick={addCondition} title="Add a new assembly"
+              style={{ padding: "3px 9px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 12, color: "var(--ink-muted)" }}>+ assembly</button>
           </div>
           {/* the active condition's appearance editor, restored to the top bar —
               same component the docked panel row renders (one source of truth) */}
@@ -9198,7 +9209,7 @@ export default function TakeoffCanvas() {
           from the panel header, persisted with the panel prefs. */}
       {!focusMode && !workspaceLayout && panelPrefs.strip && (
         <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "7px 14px", flexWrap: "wrap", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-bright)" }}>
-          <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Conditions</span>
+          <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Assemblies</span>
           {conditions.map((c, i) => {
             const on = c.id === activeCond;
             // the 1–9 badge follows the same rule as the hotkeys: palette order
@@ -9213,7 +9224,7 @@ export default function TakeoffCanvas() {
               </button>
             );
           })}
-          <button onClick={addCondition} style={{ padding: "4px 10px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 12.5, color: "var(--ink-muted)" }}>+ condition</button>
+          <button onClick={addCondition} style={{ padding: "4px 10px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 12.5, color: "var(--ink-muted)" }}>+ assembly</button>
         </div>
       )}
 
@@ -9361,6 +9372,12 @@ export default function TakeoffCanvas() {
          </>)}
        </nav>
        )}
+       {view === "canvas" && simple && toolPick && (
+         <AssemblyPicker tool={toolPick.tool} top={toolPick.top} conditions={conditions} shapes={shapes} activeId={activeCond}
+           onPick={(id) => { activateCondition(id); setToolPick(null); }}
+           onNew={(measure) => { setToolPick(null); addCondition(measure); }}
+           onClose={() => setToolPick(null)} />
+       )}
        {/* docked LEFT panel — one of Markups/Stamps/RFIs at a time. Reflows the
            canvas (a flex sibling), mirroring the docked Takeoffs panel on the right. */}
        {leftTab && (
@@ -9467,13 +9484,13 @@ export default function TakeoffCanvas() {
                                  <span style={{ width: 9, height: 9, background: lc.color, border: "1px solid var(--ink-faint)" }} />
                                  {lc.finish_tag}
                                </span>
-                               <button onClick={() => { setActiveCond(lc.id); }} style={{ ...ctrl, color: "var(--cobalt)" }} title="Make this the active condition">Select</button>
-                               <button onClick={() => unlinkCondition(m)} style={{ ...ctrl, color: "var(--ink-muted)" }} title="Detach this annotation from its condition">Detach</button>
+                               <button onClick={() => { setActiveCond(lc.id); }} style={{ ...ctrl, color: "var(--cobalt)" }} title="Make this the active assembly">Select</button>
+                               <button onClick={() => unlinkCondition(m)} style={{ ...ctrl, color: "var(--ink-muted)" }} title="Detach this annotation from its assembly">Detach</button>
                              </>
                            ) : conditions.length > 0 && (
                              <select name="link-condition" value="" onChange={(e) => { if (e.target.value) linkCondition(m, e.target.value); }}
-                               title="Attach this annotation to a condition" style={{ ...ctrl, background: "var(--paper-bright)", maxWidth: 170 }}>
-                               <option value="">Attach to condition…</option>
+                               title="Attach this annotation to an assembly" style={{ ...ctrl, background: "var(--paper-bright)", maxWidth: 170 }}>
+                               <option value="">Attach to assembly…</option>
                                {conditions.map((c) => <option key={c.id} value={c.id}>{c.finish_tag}</option>)}
                              </select>
                            )}
@@ -9622,13 +9639,13 @@ export default function TakeoffCanvas() {
                                        <span style={{ width: 9, height: 9, background: lc.color, border: "1px solid var(--ink-faint)" }} />
                                        {lc.finish_tag}
                                      </span>
-                                     <button onClick={() => { setActiveCond(lc.id); }} style={{ ...ctrl, color: "var(--cobalt)" }} title="Make this the active condition">Select</button>
-                                     <button onClick={() => unlinkCondition(m)} style={{ ...ctrl, color: "var(--ink-muted)" }} title="Detach this annotation from its condition">Detach</button>
+                                     <button onClick={() => { setActiveCond(lc.id); }} style={{ ...ctrl, color: "var(--cobalt)" }} title="Make this the active assembly">Select</button>
+                                     <button onClick={() => unlinkCondition(m)} style={{ ...ctrl, color: "var(--ink-muted)" }} title="Detach this annotation from its assembly">Detach</button>
                                    </>
                                  ) : conditions.length > 0 && (
                                    <select name="link-condition" value="" onChange={(e) => { if (e.target.value) linkCondition(m, e.target.value); }}
-                                     title="Attach this annotation to a condition" style={{ ...ctrl, background: "var(--paper-bright)", maxWidth: 170 }}>
-                                     <option value="">Attach to condition…</option>
+                                     title="Attach this annotation to an assembly" style={{ ...ctrl, background: "var(--paper-bright)", maxWidth: 170 }}>
+                                     <option value="">Attach to assembly…</option>
                                      {conditions.map((c) => <option key={c.id} value={c.id}>{c.finish_tag}</option>)}
                                    </select>
                                  )}
@@ -10814,7 +10831,7 @@ export default function TakeoffCanvas() {
             <div style={{ fontSize: 12.5, opacity: 0.6 }}>{!unitsPerPx ? "Set scale first" : tool === "zone" ? "Trace a region (an apartment, a wing) — ⏎ closes it and lists every condition inside" : !activeCond ? "Pick a condition" : tool === "oneclick" ? "Click inside a room — it selects itself" : tool === "surface" ? "Trace the wall run" : "Click to trace an area"}</div>
           )}
           {selShape?.measure_role === "surface_area" && (
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }} title="Height for THIS wall only — full-height tile here, 4-ft wainscot there, same condition. ↺ returns to the condition height.">
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }} title="Height for THIS wall only — full-height tile here, 4-ft wainscot there, same assembly. ↺ returns to the assembly height.">
               <Icon name="height" size={12} />
               <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>this wall</span>
               <input name="shape-height-ft" type="number" min="0" step={heightStep(units)} value={shapeHDraft ?? dimInputStr(selShape.height_ft, units, "height")}
@@ -10823,7 +10840,7 @@ export default function TakeoffCanvas() {
                 style={{ width: 56, padding: "2px 5px", border: "1px solid var(--ink-faint)", fontSize: 12 }} />
               <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>{heightUnit(units)} → {fa(selShape.computed?.area_sf || 0)}</span>
               {condH > 0 && Number(selShape.height_ft) !== condH && (
-                <button onClick={clearShapeHeight} title="Set this wall to the condition height" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 0 }}>↺</button>
+                <button onClick={clearShapeHeight} title="Set this wall to the assembly height" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 0 }}>↺</button>
               )}
             </div>
           )}
@@ -10848,7 +10865,7 @@ export default function TakeoffCanvas() {
                 {vInput("rise_ft", rise, "rise", "↑")}
                 {vInput("drop_ft", drop, "drop", "↓")}
                 <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>{heightUnit(units)} → {fl(selShape.computed?.perimeter_lf || 0)}</span>
-                {own && <button onClick={clearShapeVertical} title="Use the condition's rise and drop for this run" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 0 }}>↺</button>}
+                {own && <button onClick={clearShapeVertical} title="Use the assembly's rise and drop for this run" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 0 }}>↺</button>}
               </div>
             );
           })()}
@@ -10859,7 +10876,7 @@ export default function TakeoffCanvas() {
           {borderTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(borderTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)} border</span></div>}
           {lfTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(lenVal(lfTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{lenUnit(units)}</span></div>}
           {countTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(countTotal, 0)} <span style={{ fontSize: 12, fontWeight: 600 }}>EA</span></div>}
-          {vertTotal > 0 && <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }} title="Display only — floor-area perimeters × this condition's height (not committed)">{fa(vertTotal)} vert (perim × H)</div>}
+          {vertTotal > 0 && <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }} title="Display only — floor-area perimeters × this assembly's height (not committed)">{fa(vertTotal)} vert (perim × H)</div>}
           {condTotal === 0 && lfTotal === 0 && countTotal === 0 && wallTotal === 0 && borderTotal === 0 && <div style={{ fontSize: 12.5, color: "var(--ink-muted)", marginTop: 2 }}>—</div>}
           {tally.length > 0 && (
             <>
@@ -10943,7 +10960,7 @@ export default function TakeoffCanvas() {
             })}
             <div style={{ padding: "7px 12px", fontSize: 10, color: "var(--ink-muted)" }}>
               Shapes counted by their center point · same sheet only · counted shapes glow cobalt.
-              {zoneRows.some((r) => (r.multiplier || 1) > 1) && <> Rows marked ×N already have the condition's multiplier applied — the same convention as the Report's Groups section, not its base-quantity by-sheet rows.</>}
+              {zoneRows.some((r) => (r.multiplier || 1) > 1) && <> Rows marked ×N already have the assembly's multiplier applied — the same convention as the Report's Groups section, not its base-quantity by-sheet rows.</>}
               {/* A deduct classifies by its OWN center, independent of its positive
                   area's center (same rule the Report's by-sheet "negative slices"
                   note already documents for a cross-sheet split) — a zone edge

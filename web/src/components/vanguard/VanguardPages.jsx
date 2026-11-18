@@ -13,6 +13,7 @@ import TakeoffCanvas from "../../pages/TakeoffCanvas.jsx";
 import { setActiveStore } from "../../lib/store.js";
 import { createServerStore } from "../../lib/serverStore.js";
 import { api, enc, onSignedOut } from "../../lib/vanguardApi.js";
+import AssembliesPage from "./AssembliesPage.jsx";
 import "../../styles/vanguardPages.css";
 
 // ── shared bits ─────────────────────────────────────────────────────────────
@@ -150,6 +151,7 @@ function TopBar({ user, onSignOut }) {
       <Link to="/" className="vp-brand"><Logo /><strong>Vanguard</strong><em>Takeoff</em></Link>
       <nav className="vp-nav">
         <Link to="/">Projects</Link>
+        <Link to="/assemblies">Assemblies</Link>
         {user.role === "admin" && <Link to="/team">Team</Link>}
       </nav>
       <div className="vp-user">
@@ -421,6 +423,7 @@ export default function ServerRoot({ initial }) {
       ) : (<>
         <Route path="/project/:id" element={<ProjectCanvas />} />
         <Route path="/" element={<><TopBar user={user} onSignOut={signOut} /><ProjectsPage user={user} /></>} />
+        <Route path="/assemblies" element={<><TopBar user={user} onSignOut={signOut} /><AssembliesPage /></>} />
         <Route path="/team" element={user.role === "admin" ? <><TopBar user={user} onSignOut={signOut} /><TeamPage user={user} /></> : <Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </>)}

@@ -448,7 +448,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
         {/* always rendered, even with zero custom columns — Sheet grouping
             is useful on its own */}
         <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "var(--ink)", whiteSpace: "nowrap" }}
-          title="Break the condition table into sections with subtotals">
+          title="Break the assembly table into sections with subtotals">
           Group:
           <select name="report-group-by" value={groupBy} onChange={(e) => { setGroupByRaw(e.target.value); saveGroupBy(e.target.value); }}
             style={{ padding: "5px 6px", border: "1px solid var(--ink-faint)", background: "transparent", fontSize: 12, maxWidth: 160 }}>
@@ -468,7 +468,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
               <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
                 <strong style={{ fontFamily: "var(--f-display)", fontSize: 13 }}>Columns</strong>
                 <div style={{ flex: 1 }} />
-                <button onClick={applyLaborPreset} title="No-waste actuals per condition — hides SF/SY w/Waste, shows Total SF"
+                <button onClick={applyLaborPreset} title="No-waste actuals per assembly — hides SF/SY w/Waste, shows Total SF"
                   style={{ border: "none", background: "transparent", color: "var(--cobalt)", cursor: "pointer", fontSize: 11.5, padding: "0 10px 0 0" }}>Labor view</button>
                 <button onClick={() => { setColPrefs({}); saveColPrefs({}); }} title="Back to the default column set"
                   style={{ border: "none", background: "transparent", color: "var(--cobalt)", cursor: "pointer", fontSize: 11.5, padding: "0 10px 0 0" }}>Reset</button>
@@ -480,7 +480,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
               {TABLE_PROFILE.filter((c) => !c.locked && !c.defaultVisible).map(colCheckbox)}
               <div style={{ borderTop: "1px solid var(--ink-faint)", margin: "8px 0 4px", paddingTop: 6, fontFamily: "var(--f-mono)", fontSize: 9.5, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-muted)" }}>Custom columns</div>
               {customCols.length ? customCols.map(colCheckbox) : (
-                <div style={{ fontSize: 10.5, color: "var(--ink-muted)", lineHeight: 1.5 }}>No custom columns yet — define them from the condition bar in the canvas.</div>
+                <div style={{ fontSize: 10.5, color: "var(--ink-muted)", lineHeight: 1.5 }}>No custom columns yet — define them from the assembly bar in the canvas.</div>
               )}
               {/* read-only product-spec columns — only shown when a schedule
                   import attached spec data to at least one condition */}
@@ -600,7 +600,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
           items={[
             { section: "Report" },
             { id: "csv", icon: "document", label: "CSV", disabled: !rows.length, onSelect: exportCsv },
-            { id: "xlsx", icon: "document", label: "Excel", disabled: !rows.length, title: "Excel workbook — Conditions / By sheet / Materials / Shapes", onSelect: exportXlsx },
+            { id: "xlsx", icon: "document", label: "Excel", disabled: !rows.length, title: "Excel workbook — Assemblies / By sheet / Materials / Shapes", onSelect: exportXlsx },
             { id: "json", icon: "document", label: "JSON", disabled: !rows.length && !markups.length && !rfis.length, title: "JSON — works markups-only / RFI-only too", onSelect: exportJson },
             { section: "Shapes" },
             { id: "shapes-csv", icon: "document", label: "Shapes CSV", disabled: !shapes.length, title: "Per-shape measured quantities — no multiplier, no waste", onSelect: exportShapesCsv },
@@ -830,7 +830,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
                 <table style={{ width: "100%", borderCollapse: "collapse", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)" }}>
                   <thead>
                     <tr>
-                      <th style={{ ...th, textAlign: "left" }}>Condition</th>
+                      <th style={{ ...th, textAlign: "left" }}>Assembly</th>
                       <th style={th}>Ceiling/Area {AU}</th>
                       <th style={th}>Wall {AU}</th>
                       <th style={th}>{LU}</th>
@@ -1177,7 +1177,7 @@ function ContributeModal({ conditions, shapes, scaleInfo = [], provenanceCounter
         <div style={{ padding: "16px", fontSize: 13, lineHeight: 1.6, color: "var(--ink)" }}>
           <p style={{ marginTop: 0 }}>Help grow a shared, flooring-tuned open model. We send only the <strong>derived takeoff</strong>:</p>
           <ul style={{ margin: "0 0 10px", paddingLeft: 18 }}>
-            <li>condition labels, shape types, and quantities (SF / LF / EA)</li>
+            <li>assembly labels, shape types, and quantities (SF / LF / EA)</li>
             <li>normalized room geometry (shape only — no scale, no location)</li>
             <li>how each shape was made (hand-traced vs. machine-proposed) and whether you corrected it</li>
           </ul>

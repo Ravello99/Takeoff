@@ -35,6 +35,9 @@ export const libFields = (lm) => ({
   round: lm.round !== false, note: lm.note || "",
   ...(lm.kind ? { kind: lm.kind } : {}),
   ...(lm.grout ? { grout: { ...lm.grout } } : {}),
+  // Vanguard: Layers / Stud O.C. scaling travels with the material (lib/assembly.js)
+  ...(lm.scale ? { scale: lm.scale } : {}),
+  ...(lm.layers_base ? { layers_base: lm.layers_base } : {}),
 });
 
 // overridden = this line's field differs from its linked library entry

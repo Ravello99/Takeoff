@@ -66,6 +66,7 @@ export const instantiateTemplate = (t) => ({
   ...(t.drop_ft != null ? { drop_ft: t.drop_ft } : {}),
   ...(t.board_layers != null ? { board_layers: t.board_layers } : {}),   // Vanguard assembly params (lib/assembly.js)
   ...(t.stud_oc_in != null ? { stud_oc_in: t.stud_oc_in } : {}),
+  ...(t.measure ? { measure: t.measure } : {}),   // Vanguard: wall | area | line | count (tool picker)
   ...(t.laborType != null ? { laborType: t.laborType } : {}),
   ...(t.subfloorType != null ? { subfloorType: t.subfloorType } : {}),
   ...(t.roll_setup ? { roll_setup: { ...t.roll_setup } } : {}),

@@ -44,3 +44,28 @@
   border-color: var(--cobalt) !important; box-shadow: none !important;
 }
 .app-shell.vg-simple .vg-tile[aria-pressed="true"] svg { color: var(--accent-contrast) !important; }
+
+/* ── Assembly picker (opens beside the tool rail) ────────────────────── */
+.vg-picker {
+  position: fixed; left: calc(var(--rail-w, 76px) + 8px); z-index: 60; width: 320px; max-height: 420px;
+  display: flex; flex-direction: column; background: var(--paper-bright); color: var(--ink);
+  border: 1px solid var(--ink-faint); border-radius: 12px; box-shadow: 0 12px 36px rgba(15, 23, 42, .18);
+  font-family: var(--f-body); overflow: hidden;
+}
+.vg-picker header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 6px; }
+.vg-picker header strong { font-size: 13px; }
+.vg-pick-x { border: none; background: none; font-size: 20px; line-height: 1; cursor: pointer; color: var(--ink-muted); }
+.vg-pick-search { margin: 0 10px 6px; padding: 7px 10px; border: 1px solid var(--ink-faint); border-radius: 8px; font: inherit; font-size: 13px; background: var(--paper-cream); color: var(--ink); }
+.vg-pick-list { overflow: auto; padding: 2px 6px 6px; flex: 1; }
+.vg-pick-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border: 1px solid transparent; border-radius: 8px; background: none; cursor: pointer; text-align: left; color: var(--ink); font: inherit; }
+.vg-pick-row:hover { background: var(--paper-shadow); }
+.vg-pick-row.is-active { border-color: var(--cobalt); background: color-mix(in srgb, var(--cobalt) 8%, transparent); }
+.vg-pick-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.vg-pick-text strong { font-size: 13px; }
+.vg-pick-text small { font-size: 11.5px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vg-pick-check { color: var(--cobalt); font-weight: 700; }
+.vg-pick-more { width: 100%; text-align: left; border: none; background: none; padding: 8px 8px 4px; font: inherit; font-size: 12px; font-weight: 600; color: var(--ink-muted); cursor: pointer; }
+.vg-pick-empty { font-size: 12.5px; color: var(--ink-muted); padding: 6px 8px; margin: 0; }
+.vg-picker footer { border-top: 1px solid var(--ink-faint); padding: 8px 10px; }
+.vg-pick-new { width: 100%; padding: 8px; border: 1px dashed var(--ink-faint); border-radius: 8px; background: none; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; color: var(--cobalt); }
+.vg-pick-new:hover { background: var(--paper-shadow); }

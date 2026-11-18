@@ -7,7 +7,7 @@ import "./workspaceChrome.css";
 // this component owns only navigation, search and disclosure state.
 export function WorkspaceChrome({ title, onOpen, onNavigate, navigationOpen, onTakeoffs, takeoffsOpen,
   onPremium, onWork, workOpen, workButtonRef, pending, running, onReport, onFocus, onClassic,
-  onControls, controlsOpen, onSearch, pinControl, panelTools, layoutMenu, helpMenu, fileMenu, scaleMenu, conditionControl, aids, history, action, simple = false, onProjects }) {
+  onControls, controlsOpen, onSearch, pinControl, panelTools, layoutMenu, helpMenu, fileMenu, scaleMenu, conditionControl, aids, history, action, simple = false, onProjects, onAssemblies }) {
   // simple = Vanguard simple mode: only the everyday controls stay visible.
   return <>
     <header className="calm-header">
@@ -15,12 +15,13 @@ export function WorkspaceChrome({ title, onOpen, onNavigate, navigationOpen, onT
       <div className="calm-project" title={title}><span>{title || "Untitled project"}</span><small>Vanguard Drywall &amp; Acoustics</small></div>
       <div className="calm-header-actions">
         {onProjects && <button type="button" onClick={onProjects} title="Back to all projects (your work is saved)"><Icon name="sheets" size={16} />Projects</button>}
+        {onAssemblies && <button type="button" onClick={onAssemblies} title="Open the Assembly builder in a new tab"><Icon name="product" size={16} />Assemblies</button>}
         <button type="button" onClick={onOpen} title="Open plans — PDF, image, or a .zip plan set"><Icon name="plus" size={16} /><span>{simple ? "Open plans" : "Open"}</span></button>
         {fileMenu}
         <button type="button" aria-pressed={navigationOpen} onClick={onNavigate}><Icon name="sheets" size={16} />Sheets</button>
         {!simple && pinControl}
         <button type="button" onClick={onSearch} className="calm-search-trigger" title="Find a tool or action"><Icon name="search" size={16} /><span>{simple ? "Search" : "Find an action"}</span><kbd>{keyText("⌘K")}</kbd></button>
-        <button type="button" aria-pressed={takeoffsOpen} onClick={onTakeoffs} title="Your takeoffs — conditions, quantities and materials"><Icon name="product" size={16} />{simple ? "Takeoffs" : "Quantities"}</button>
+        <button type="button" aria-pressed={takeoffsOpen} onClick={onTakeoffs} title="Your takeoffs — assemblies, quantities and materials"><Icon name="product" size={16} />{simple ? "Takeoffs" : "Quantities"}</button>
         {!simple && <button type="button" ref={workButtonRef} aria-expanded={workOpen} onClick={onWork} className="calm-work">Work{running ? <span className="calm-badge">Running</span> : pending > 0 ? <span className="calm-badge">{pending}</span> : null}</button>}
         {!simple && panelTools}
         <button type="button" onClick={onReport} className="calm-report" data-tour="report"><Icon name="document" size={16} />Report</button>

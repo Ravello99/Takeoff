@@ -36,7 +36,7 @@ export const GETTERS = {
 // Table columns: order + header + default visibility. foot(g) fills the tfoot
 // cell from grandTotals(rows); undefined → blank. ref: never in the tfoot.
 export const TABLE_PROFILE = [
-  { key: "finish",        header: "Condition",  defaultVisible: true, locked: true },
+  { key: "finish",        header: "Assembly",  defaultVisible: true, locked: true },
   { key: "shapes",        header: "Shapes",     defaultVisible: true },
   { key: "floor_sf",      header: "Ceiling/Area SF", defaultVisible: true },
   { key: "wall_sf",       header: "Wall SF",    defaultVisible: true },
