@@ -166,6 +166,15 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("[takeoff] %s - %s\n" % (self.address_string(), fmt % args))
 
     # helpers
+    def client_ip(self) -> str:
+        """The visitor's address; behind the local Caddy proxy, the one it forwards."""
+        ip = self.client_address[0]
+        if ip in ("127.0.0.1", "::1"):
+            fwd = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            if fwd:
+                return fwd
+        return ip
+
     def secure(self) -> bool:
         return self.headers.get("X-Forwarded-Proto", "").lower() == "https"
 
@@ -313,7 +322,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == ["login"] and m == "POST":
             body = self.read_json()
             email = str(body.get("email", "")).strip()
-            key = f"{email.lower()}|{self.client_address[0]}"
+            key = f"{email.lower()}|{self.client_ip()}"
             if a.limiter.blocked(key):
                 raise ApiError(429, "Too many attempts. Wait 15 minutes and try again.")
             u = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()

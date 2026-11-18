@@ -139,6 +139,16 @@ export function HatchPattern({ id, type, line, fill, dark }) {
 }
 
 // Preview swatch — renders the ACTUAL pattern so the picker always matches the draw.
+// Vanguard: a condition is identified by its LINE colour — the colour its
+// takeoffs are drawn in on the plan — so lists show a plain swatch of it.
+export function ColorSwatch({ color }) {
+  return (
+    <svg width="26" height="18" style={{ display: "block" }} aria-hidden="true">
+      <rect x="0.5" y="0.5" width="25" height="17" rx="3" fill={color || "#c96442"} stroke="rgba(0,0,0,.18)" />
+    </svg>
+  );
+}
+
 export function HatchSwatch({ type, line, fill }) {
   const fc = fill && fill !== NO_FILL ? fill : null;
   const pid = `sw-${type}-${String(line).replace("#", "")}-${String(fill).replace("#", "")}`;

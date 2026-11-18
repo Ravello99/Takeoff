@@ -8,6 +8,7 @@ takeoff.py — set up, brand, build and host Vanguard Takeoff.
     python3 takeoff.py build            # build the static site into web/dist
     python3 takeoff.py serve            # app + accounts server on port 8090
     python3 takeoff.py service          # run in the background and start on boot (as root)
+    python3 takeoff.py domain takeoff.vanguarddrywall.ca   # HTTPS via the DrywallApp's Caddy
     python3 takeoff.py backup           # back up all projects and accounts
     python3 takeoff.py docker           # write Dockerfile.vanguard + nginx config
 
@@ -443,6 +444,45 @@ WantedBy=multi-user.target
     log("  status: systemctl status vanguard-takeoff    logs: journalctl -u vanguard-takeoff -f")
 
 
+def cmd_domain(args) -> None:
+    """Serve the app at https://<domain> through the DrywallApp's Caddy."""
+    import re
+    import socket
+    domain = args.name.strip().lower()
+    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", domain):
+        sys.exit(f"'{args.name}' doesn't look like a domain name.")
+    dwa = Path(args.drywallapp).expanduser() if args.drywallapp else None
+    if not dwa:
+        for cand in (Path.home() / "DrywallApp", Path("/root/DrywallApp"), Path("/opt/DrywallApp")):
+            if (cand / "run.py").exists():
+                dwa = cand
+                break
+    if not dwa or not (dwa / "run.py").exists():
+        sys.exit("Couldn't find the DrywallApp folder. Pass it with --drywallapp /path/to/DrywallApp")
+    try:
+        ip = socket.gethostbyname(domain)
+        log(f"{domain} points to {ip}.")
+    except OSError:
+        log(f"WARNING: {domain} doesn't resolve yet. Add the CNAME record first, then wait a few minutes.")
+    block = (f"{domain} {{\n"
+             f"\tencode gzip\n"
+             f"\treverse_proxy 127.0.0.1:{args.port}\n"
+             f"\theader Strict-Transport-Security \"max-age=31536000\"\n"
+             f"}}\n")
+    extra = dwa / ".data" / "extra-sites.caddy"
+    extra.parent.mkdir(parents=True, exist_ok=True)
+    text = extra.read_text() if extra.exists() else ""
+    # replace an existing block for this domain, keep other sites
+    text = re.sub(rf"(?ms)^# Vanguard Takeoff\n{re.escape(domain)} \{{.*?^\}}\n?", "", text).strip()
+    text = (text + "\n\n" if text else "") + "# Vanguard Takeoff\n" + block
+    extra.write_text(text)
+    log(f"Wrote {extra}")
+    log("Next, restart the DrywallApp so its Caddy picks this up:")
+    log(f"  cd {dwa} && python3 run.py update")
+    log(f"Then open https://{domain}. Once it works, keep plain http off the internet:")
+    log(f"  cd {HERE} && python3 takeoff.py service --host 127.0.0.1")
+
+
 def cmd_backup(args) -> None:
     """Copy the database (safely, even while running) and plan files to one archive."""
     import sqlite3
@@ -522,10 +562,14 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn in [("setup", cmd_setup), ("brand", cmd_brand), ("build", cmd_build),
-                     ("serve", cmd_serve), ("service", cmd_service), ("backup", cmd_backup), ("docker", cmd_docker),
+                     ("serve", cmd_serve), ("service", cmd_service), ("domain", cmd_domain), ("backup", cmd_backup), ("docker", cmd_docker),
                      ("init-config", cmd_init_config), ("all", cmd_all)]:
         sp = sub.add_parser(name)
         sp.set_defaults(func=fn)
+        if name == "domain":
+            sp.add_argument("name", help="e.g. takeoff.vanguarddrywall.ca")
+            sp.add_argument("--drywallapp", default="", help="DrywallApp folder (default: ~/DrywallApp)")
+            sp.add_argument("--port", type=int, default=8090)
         if name == "backup":
             sp.add_argument("--to", default="", help="folder for the backup archive (default: ./backups)")
         if name in {"serve", "all", "service"}:

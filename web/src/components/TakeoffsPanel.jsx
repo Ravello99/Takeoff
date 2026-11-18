@@ -33,7 +33,7 @@ import { attrValue, columnLabel } from "../lib/conditionColumns.js";
 import { SPEC_FIELDS } from "../lib/reportColumns.js";
 import { num } from "../lib/num.js";
 import { areaVal, areaUnit, lenVal, lenUnit, heightUnit, heightInputToFeet, heightStep, thickUnit, thickInputToInches, thickStep, dimInputStr } from "../lib/units";
-import { HATCHES, PALETTE, NO_FILL, HatchSwatch } from "./hatches.jsx";
+import { HATCHES, PALETTE, NO_FILL, HatchSwatch, ColorSwatch } from "./hatches.jsx";
 import { LINE_STYLES, LINE_STYLE_IDS } from "../lib/lineStyles.js";
 import { baseTagOf, localCount } from "../lib/variants.ts";
 import { materialKind, MATERIAL_PRESETS, GROUT_DEFAULTS, groutDerivedFields, showsGroutCalc, showsGroutDeriveAffordance, isLinearGrout, baseGroutParams, baseCourses, groutRateStale, inFrac } from "../lib/coverage.js";
@@ -1057,7 +1057,7 @@ function TakeoffsPanel({
           style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, rowGap: 5, padding: "9px 12px", cursor: "pointer", outline: reassigning ? "1px dashed var(--cobalt)" : "none", outlineOffset: -3, userSelect: "none" }}>
           {hot && <span title={pinned ? `Palette shortcut — press ${hIdx + 1} to activate` : `Press ${hIdx + 1} to activate (pin to lock this number)`} style={{ fontSize: 9, fontFamily: "var(--f-mono,monospace)", color: pinned ? "var(--cobalt)" : "var(--ink-muted)", border: `1px solid ${pinned ? "var(--cobalt)" : "var(--ink-faint)"}`, borderRadius: 3, padding: "0 3px", flexShrink: 0 }}>{hIdx + 1}</span>}
           <ConditionEye tag={c.finish_tag} hidden={hidden} onToggle={(isolate) => onToggleHidden(c.id, isolate)} />
-          <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, flexShrink: 0, opacity: hidden ? 0.35 : 1 }}><HatchSwatch type={c.hatch || "solid"} line={c.color} fill={c.fill} /></span>
+          <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, flexShrink: 0, opacity: hidden ? 0.35 : 1 }}><ColorSwatch color={c.color} /></span>
           {/* the tag is the row's identity: it holds a floor (ROW_TAG_MIN_W) and
               the action cluster wraps under it on a narrow panel, instead of the
               tag collapsing to nothing beside buttons that never shrink */}
@@ -1347,7 +1347,7 @@ function TakeoffsPanel({
             {templates.length === 0 && <div style={{ padding: "2px 12px 12px", color: "var(--ink-muted)" }}>No templates yet — make a condition the way you like it, then save it here.</div>}
             {templates.map((t, idx) => (
               <div key={`${t.finish_tag}-${idx}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderTop: "1px solid var(--ink-faint)" }}>
-                <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, flexShrink: 0 }}><HatchSwatch type={t.hatch || "solid"} line={t.color} fill={t.fill} /></span>
+                <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, flexShrink: 0 }}><ColorSwatch color={t.color} /></span>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.finish_tag}</div>
                   <div style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, color: "var(--ink-muted)" }}>
