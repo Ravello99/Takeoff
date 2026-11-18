@@ -5,6 +5,8 @@ import "./styles/tokens.css";
 import "./styles/app.css";
 import "./styles/print.css";   // OT-only print block — kept out of app.css so tokens/app stay byte-synced with Spline
 import TakeoffCanvas from "./pages/TakeoffCanvas.jsx";
+import ServerRoot from "./components/vanguard/VanguardPages.jsx";
+import { serverStatus } from "./lib/vanguardApi.js";
 import ProjectHome from "./components/ProjectHome.jsx";
 import { GoogleAuthProvider, useGoogleAuth } from "./lib/google/AuthContext.jsx";
 import { projectIdFromUrl, setActiveStore, metaGet, metaDelete } from "./lib/store.js";
@@ -48,7 +50,7 @@ const centered = {
 };
 const brand = (
   <strong style={{ fontFamily: "var(--f-display)", fontSize: 20, letterSpacing: "-0.02em" }}>
-    open<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>takeoff</span>
+    vanguard<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>takeoff</span>
   </strong>
 );
 
@@ -490,14 +492,28 @@ function App() {
   return <WorkspaceGate />;
 }
 
+// Vanguard: when the site is served by backend/server.py, the app runs in
+// server mode — sign-in, team accounts and server-stored projects
+// (components/vanguard/VanguardPages.jsx). On a plain static host there is
+// no /api, and the original browser-only workspace runs as before.
+function Root() {
+  const [status, setStatus] = useState(undefined);   // undefined = checking, null = no server
+  useEffect(() => { serverStatus().then(setStatus); }, []);
+  if (status === undefined) return null;
+  if (status) return <ServerRoot initial={status} />;
+  return (
+    <Routes>
+      <Route path="/projects" element={<ProjectHomeGate />} />
+      <Route path="*" element={<App />} />
+    </Routes>
+  );
+}
+
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <GoogleAuthProvider>
       <BrowserRouter>
-        <Routes>
-          <Route path="/projects" element={<ProjectHomeGate />} />
-          <Route path="*" element={<App />} />
-        </Routes>
+        <Root />
       </BrowserRouter>
     </GoogleAuthProvider>
   </React.StrictMode>

@@ -7,13 +7,14 @@ import "./workspaceChrome.css";
 // this component owns only navigation, search and disclosure state.
 export function WorkspaceChrome({ title, onOpen, onNavigate, navigationOpen, onTakeoffs, takeoffsOpen,
   onPremium, onWork, workOpen, workButtonRef, pending, running, onReport, onFocus, onClassic,
-  onControls, controlsOpen, onSearch, pinControl, panelTools, layoutMenu, helpMenu, fileMenu, scaleMenu, conditionControl, aids, history, action, simple = false }) {
+  onControls, controlsOpen, onSearch, pinControl, panelTools, layoutMenu, helpMenu, fileMenu, scaleMenu, conditionControl, aids, history, action, simple = false, onProjects }) {
   // simple = Vanguard simple mode: only the everyday controls stay visible.
   return <>
     <header className="calm-header">
       <strong className="calm-brand vg-brand"><img src="/brand/logo.png" alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} /><span className="vg-brand-name">Vanguard<em>Takeoff</em></span></strong>
       <div className="calm-project" title={title}><span>{title || "Untitled project"}</span><small>Vanguard Drywall &amp; Acoustics</small></div>
       <div className="calm-header-actions">
+        {onProjects && <button type="button" onClick={onProjects} title="Back to all projects (your work is saved)"><Icon name="sheets" size={16} />Projects</button>}
         <button type="button" onClick={onOpen} title="Open plans — PDF, image, or a .zip plan set"><Icon name="plus" size={16} /><span>{simple ? "Open plans" : "Open"}</span></button>
         {fileMenu}
         <button type="button" aria-pressed={navigationOpen} onClick={onNavigate}><Icon name="sheets" size={16} />Sheets</button>

@@ -694,7 +694,12 @@ export function setActiveStore(next) {
 // default anonymous, local-only mode.
 export function projectIdFromUrl() {
   try {
-    return new URLSearchParams(window.location.search).get("project") || "";
+    const q = new URLSearchParams(window.location.search).get("project");
+    if (q) return q;
+    // Vanguard server projects live at /project/<id>; prefixed so they can't
+    // collide with a Drive folder id in per-project caches and settings.
+    const m = /^\/project\/([^/?#]+)/.exec(window.location.pathname);
+    return m ? `srv:${decodeURIComponent(m[1])}` : "";
   } catch {
     return "";   // no window (SSR/tests) or a malformed query — stay local
   }

@@ -6,7 +6,9 @@ takeoff.py — set up, brand, build and host Vanguard Takeoff.
     python3 takeoff.py setup            # npm install for the web app
     python3 takeoff.py brand            # apply logos/colors from brand.json + brand/
     python3 takeoff.py build            # build the static site into web/dist
-    python3 takeoff.py serve --port 8090
+    python3 takeoff.py serve            # app + accounts server on port 8090
+    python3 takeoff.py service          # run in the background and start on boot (as root)
+    python3 takeoff.py backup           # back up all projects and accounts
     python3 takeoff.py docker           # write Dockerfile.vanguard + nginx config
 
 Requirements: Python 3.9+, Node.js 24+ and npm.  Optional: Pillow
@@ -35,6 +37,7 @@ import shutil
 import socketserver
 import subprocess
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -405,15 +408,64 @@ class SPAHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def cmd_serve(args) -> None:
+    """Run the Vanguard server: the web app + accounts + server-stored projects."""
     dist = find_dist(find_web_root())
-    handler = functools.partial(SPAHandler, directory=str(dist))
-    socketserver.ThreadingTCPServer.allow_reuse_address = True
-    with socketserver.ThreadingTCPServer((args.host, args.port), handler) as httpd:
-        log(f"Serving {load_brand()['app_name']} at http://{args.host}:{args.port}  (Ctrl+C to stop)")
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            log("Stopped.")
+    sys.path.insert(0, str(HERE / "backend"))
+    import server as vserver
+    data = Path(args.data).resolve() if getattr(args, "data", None) else HERE / "data"
+    log(f"Projects and accounts are stored in {data} — back this folder up.")
+    vserver.main(["--dist", str(dist), "--data", str(data), "--host", args.host, "--port", str(args.port)])
+
+
+def cmd_service(args) -> None:
+    """Install a systemd service so the app runs in the background and on boot."""
+    if os.geteuid() != 0:
+        sys.exit("Run this as root (sudo) to install the service.")
+    find_dist(find_web_root())   # must be built first
+    unit = f"""[Unit]
+Description=Vanguard Takeoff
+After=network.target
+
+[Service]
+WorkingDirectory={HERE}
+ExecStart={sys.executable} {HERE / "takeoff.py"} serve --host {args.host} --port {args.port}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+    Path("/etc/systemd/system/vanguard-takeoff.service").write_text(unit)
+    run(["systemctl", "daemon-reload"])
+    run(["systemctl", "enable", "--now", "vanguard-takeoff"])
+    run(["systemctl", "restart", "vanguard-takeoff"])
+    log(f"Installed. It now runs in the background on port {args.port} and starts on boot.")
+    log("  status: systemctl status vanguard-takeoff    logs: journalctl -u vanguard-takeoff -f")
+
+
+def cmd_backup(args) -> None:
+    """Copy the database (safely, even while running) and plan files to one archive."""
+    import sqlite3
+    import tarfile
+    data = HERE / "data"
+    if not (data / "takeoff.db").exists():
+        sys.exit("No data yet — nothing to back up.")
+    out_dir = Path(args.to).resolve() if args.to else HERE / "backups"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    snap = out_dir / f".takeoff-{stamp}.db"
+    src = sqlite3.connect(data / "takeoff.db")
+    dst = sqlite3.connect(snap)
+    src.backup(dst)
+    dst.close(); src.close()
+    archive = out_dir / f"vanguard-takeoff-{stamp}.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(snap, arcname="data/takeoff.db")
+        if (data / "blobs").exists():
+            tar.add(data / "blobs", arcname="data/blobs")
+    snap.unlink()
+    log(f"Backup written: {archive}")
+    log("To restore: stop the service, extract it over /opt/vanguard, start the service.")
 
 
 # --------------------------------------------------------------------------
@@ -470,11 +522,13 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn in [("setup", cmd_setup), ("brand", cmd_brand), ("build", cmd_build),
-                     ("serve", cmd_serve), ("docker", cmd_docker),
+                     ("serve", cmd_serve), ("service", cmd_service), ("backup", cmd_backup), ("docker", cmd_docker),
                      ("init-config", cmd_init_config), ("all", cmd_all)]:
         sp = sub.add_parser(name)
         sp.set_defaults(func=fn)
-        if name in {"serve", "all"}:
+        if name == "backup":
+            sp.add_argument("--to", default="", help="folder for the backup archive (default: ./backups)")
+        if name in {"serve", "all", "service"}:
             sp.add_argument("--host", default="0.0.0.0",
                             help="use 0.0.0.0 to reach it from other devices on your network")
             # 8000 and 8081 are used by the DrywallApp (backend + Expo).

@@ -44,3 +44,6 @@ Files modified by takeoff.py brand:
 - web/src/styles/premiumWorkspace.css
 - web/src/styles/tokens.css
 - web/vite.config.js
+Simple mode (lib/simpleMode.js, styles/vanguardSimple.css); user accounts,
+admin invites and server-stored projects (backend/server.py,
+lib/serverStore.js, lib/vanguardApi.js, components/vanguard/).

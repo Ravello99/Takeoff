@@ -5,6 +5,33 @@ and ceilings. It runs entirely in the browser: open a PDF plan set, set the
 scale, and measure wall types, ceilings, trims and counts, then export
 quantities and a material order list to CSV, Excel or a marked-up PDF.
 
+## Accounts and projects
+
+When the app runs through `takeoff.py serve` (or the service), it has sign-in
+and server-stored projects:
+
+- **First visit:** create the admin account (one time).
+- **Team page (admin):** invite people by email. Each invite is a one-time
+  link (valid 7 days) you copy or email to them; they pick their own password.
+  Admins can turn access off or make someone else an admin.
+- **Projects page:** everyone signed in sees the company's projects. Create
+  as many as you like; plans and takeoffs save to the server automatically, so
+  work is kept between sessions and on any computer. A project can be deleted
+  by its creator or an admin (it's kept in the database, so it can be recovered).
+- **Templates, materials and stamps** are shared by the whole company.
+- If two people edit the same project at once, the second save is refused
+  with a "reload to get their changes" message, so no one overwrites anyone.
+
+Data lives in `data/` (database + plan files). Back it up with
+`python3 takeoff.py backup`. Use HTTPS (a subdomain behind Caddy) before
+inviting people: over plain http, passwords cross the network unencrypted.
+
+Run it in the background and on boot (as root):
+
+```bash
+python3 takeoff.py service
+```
+
 ## Drywall conditions
 
 New projects start with a commercial interior set: partitions W1–W6, furring
@@ -32,7 +59,7 @@ cd /opt/vanguard
 python3 takeoff.py setup                      # install packages
 python3 takeoff.py brand                      # apply logos + colors from brand.json
 python3 takeoff.py build                      # build the site into web/dist
-python3 takeoff.py serve --port 8090          # quick test at http://<server-ip>:8090
+python3 takeoff.py serve                      # http://<server-ip>:8090
 ```
 
 For permanent hosting, either point your existing web server (nginx, Apache,
