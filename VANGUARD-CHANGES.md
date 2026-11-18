@@ -11,7 +11,7 @@ Manual changes: removed upstream analytics, Netlify forms, premium
 sign-up prompts, upstream privacy/terms pages and marketing files;
 replaced the logo marks, favicon, page title and static page.
 
-Files modified by takeoff.py brand on 2026-11-17:
+Files modified by takeoff.py brand:
 
 - web/bench/ocr-codes/index.html
 - web/index.html
