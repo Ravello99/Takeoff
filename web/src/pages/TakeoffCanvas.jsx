@@ -2983,7 +2983,7 @@ export default function TakeoffCanvas() {
     try {
       const p = await buildProfile();
       downloadText("vanguard-profile.otprofile", JSON.stringify(p, null, 2), "application/json");
-      setCommitMsg(`Exported opentakeoff-profile.otprofile — ${profileSummary(p)}. Import it on another machine to carry your setup over.`);
+      setCommitMsg(`Exported vanguard-profile.otprofile — ${profileSummary(p)}. Import it on another machine to carry your setup over.`);
     } catch (e) { setCommitMsg(`Couldn't export profile: ${e?.message || e}`); }
   };
   const backupProfileFile = async () => {
@@ -2997,7 +2997,7 @@ export default function TakeoffCanvas() {
       await backupProfileFile();
       const n = await applyProfile(p);
       await refreshLibraries();
-      setCommitMsg(`Applied profile${p.name ? ` "${p.name}"` : ""} — ${n.templates} condition template${n.templates === 1 ? "" : "s"}, ${n.materials} material${n.materials === 1 ? "" : "s"}, ${n.stamps} stamp${n.stamps === 1 ? "" : "s"}, ${n.reportTemplates} report template${n.reportTemplates === 1 ? "" : "s"}. Your previous setup downloaded as opentakeoff-profile-backup.otprofile.`);
+      setCommitMsg(`Applied profile${p.name ? ` "${p.name}"` : ""} — ${n.templates} condition template${n.templates === 1 ? "" : "s"}, ${n.materials} material${n.materials === 1 ? "" : "s"}, ${n.stamps} stamp${n.stamps === 1 ? "" : "s"}, ${n.reportTemplates} report template${n.reportTemplates === 1 ? "" : "s"}. Your previous setup downloaded as vanguard-profile-backup.otprofile.`);
     } catch (e) {
       setCommitMsg(String(e?.message || "").startsWith("Couldn't") ? e.message : `Couldn't apply profile: ${e?.message || e}`);
     }
@@ -3007,7 +3007,7 @@ export default function TakeoffCanvas() {
       await backupProfileFile();
       await resetProfileDefaults();
       await refreshLibraries();
-      setCommitMsg("Profile reset to Vanguard Takeoff defaults — your previous setup downloaded as opentakeoff-profile-backup.otprofile (Import profile restores it). Project takeoffs are untouched.");
+      setCommitMsg("Profile reset to Vanguard Takeoff defaults — your previous setup downloaded as vanguard-profile-backup.otprofile (Import profile restores it). Project takeoffs are untouched.");
     } catch (e) { setCommitMsg(`Couldn't reset profile: ${e?.message || e}`); }
   };
 
@@ -8823,7 +8823,7 @@ export default function TakeoffCanvas() {
           {panelBtn(() => setShowRevisions(true), "revisions", "Revisions — save the takeoff at each bid revision, compare what moved", showRevisions)}
         </div>}
         layoutMenu={<button type="button" onClick={() => setWorkspaceLayoutOpen(true)} title="Arrange panels, lock positions, and save layouts"><Icon name="sliders" size={16} />Layout</button>}
-        helpMenu={<ToolMenu title="Learn Vanguard Takeoff, or connect an AI agent" face={<span>Help</span>} onOpenChange={onMenuDepth} items={[
+        helpMenu={<ToolMenu title="Learn Vanguard Takeoff" face={<span>Help</span>} onOpenChange={onMenuDepth} items={[
           { id: "tour", label: "Guided first takeoff", onSelect: startTour },
           { id: "guide", label: "How Vanguard Takeoff works", shortcut: "?", onSelect: () => setGuideOpen(true) },
         ]} />}

@@ -14,7 +14,7 @@ cd /opt/vanguard
 python3 takeoff.py setup                      # install packages
 python3 takeoff.py brand                      # apply logos + colors from brand.json
 python3 takeoff.py build                      # build the site into web/dist
-python3 takeoff.py serve --port 8081          # quick test at http://<server-ip>:8081
+python3 takeoff.py serve --port 8090          # quick test at http://<server-ip>:8090
 ```
 
 For permanent hosting, either point your existing web server (nginx, Apache,
@@ -23,7 +23,7 @@ Caddy) at `web/dist/` with a fallback to `index.html`, or use Docker:
 ```bash
 python3 takeoff.py docker
 docker build -f Dockerfile.vanguard -t vanguard-takeoff .
-docker run -d --restart unless-stopped -p 8081:80 vanguard-takeoff
+docker run -d --restart unless-stopped -p 8090:80 vanguard-takeoff
 ```
 
 ## Branding

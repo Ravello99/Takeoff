@@ -1,18 +1,19 @@
 {
   "app_name": "Vanguard Takeoff",
   "short_name": "Vanguard",
-  "company": "Vanguard Drywall",
+  "company": "Vanguard Drywall & Acoustics",
   "tagline": "Interior drywall & ceiling takeoff",
-  "website": "https://www.vanguarddrywall.com",
-  "support_email": "estimating@vanguarddrywall.com",
+  "website": "https://vanguarddrywall.ca",
+  "support_email": "bids@vanguard.ca",
   "colors": {
-    "primary": "#0B2545",
-    "accent": "#E4A11B",
+    "primary": "#0B2556",
+    "accent": "#B4973A",
     "background": "#FFFFFF",
-    "text": "#1A1A1A"
+    "text": "#1C2430"
   },
   "logo_svg": "brand/vanguard-logo.svg",
   "logo_png": "brand/vanguard-logo.png",
+  "logo_wordmark": "brand/vanguard-wordmark.png",
   "font_family": "",
   "css_vars": {
     "--cobalt": "primary",

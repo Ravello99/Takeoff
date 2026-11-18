@@ -6,7 +6,7 @@ takeoff.py — set up, brand, build and host Vanguard Takeoff.
     python3 takeoff.py setup            # npm install for the web app
     python3 takeoff.py brand            # apply logos/colors from brand.json + brand/
     python3 takeoff.py build            # build the static site into web/dist
-    python3 takeoff.py serve --host 0.0.0.0 --port 8081
+    python3 takeoff.py serve --port 8090
     python3 takeoff.py docker           # write Dockerfile.vanguard + nginx config
 
 Requirements: Python 3.9+, Node.js 24+ and npm.  Optional: Pillow
@@ -44,20 +44,21 @@ from pathlib import Path
 DEFAULT_BRAND = {
     "app_name": "Vanguard Takeoff",
     "short_name": "Vanguard",
-    "company": "Vanguard Drywall",
+    "company": "Vanguard Drywall & Acoustics",
     "tagline": "Interior drywall & ceiling takeoff",
-    "website": "https://www.vanguarddrywall.com",   # placeholder — change it
-    "support_email": "estimating@vanguarddrywall.com",  # placeholder — change it
+    "website": "https://vanguarddrywall.ca",
+    "support_email": "bids@vanguard.ca",
     # Match these to the colors used in the Vanguard mobile app.
     "colors": {
-        "primary": "#0B2545",      # placeholder navy
-        "accent": "#E4A11B",       # placeholder gold
+        "primary": "#0B2556",      # Vanguard navy (same as the DrywallApp)
+        "accent": "#B4973A",       # Vanguard gold
         "background": "#FFFFFF",
-        "text": "#1A1A1A",
+        "text": "#1C2430",
     },
     # Paths to your logo files (relative to this script or absolute).
     "logo_svg": "brand/vanguard-logo.svg",     # used where the app has SVG logos
-    "logo_png": "brand/vanguard-logo.png",     # square, 1024x1024 recommended
+    "logo_png": "brand/vanguard-logo.png",     # square mark, 1024x1024
+    "logo_wordmark": "brand/vanguard-wordmark.png",  # wide logo for the home screen
     "font_family": "",                          # e.g. "'Montserrat', sans-serif"
     # The app's own CSS color variables -> which brand color they should use.
     "css_vars": {"--cobalt": "primary", "--cobalt-deep": "primary"},
@@ -238,11 +239,16 @@ def theme_css(brand: dict, var_names: set[str]) -> str:
     # Point any generically named color variables at Vanguard colors.
     for v in sorted(var_names - set(brand.get("css_vars", {}))):
         low = v.lower()
+        if low.startswith("--vg-") or "contrast" in low:
+            continue
         if any(k in low for k in ("primary", "brand")):
             lines.append(f"  {v}: {c['primary']};")
         elif "accent" in low or "highlight" in low:
             lines.append(f"  {v}: {c['accent']};")
     lines.append("}")
+    # The wordmark has navy lettering: give it a light card in dark mode.
+    lines.append(':root[data-theme="dark"] .vg-home-logo { background: #fff; '
+                 'padding: 10px 16px; border-radius: 6px; }')
     if brand.get("font_family"):
         lines.append(f"body {{ font-family: {brand['font_family']}; }}")
     return "\n".join(lines) + "\n"
@@ -285,8 +291,9 @@ def cmd_brand(args) -> None:
     public.mkdir(exist_ok=True)
     # Logos used by the in-app mark (web/src/brand/marks.jsx).
     (public / "brand").mkdir(exist_ok=True)
-    for key, name in (("logo_svg", "logo.svg"), ("logo_png", "logo.png")):
-        src = resolve(brand[key])
+    for key, name in (("logo_svg", "logo.svg"), ("logo_png", "logo.png"),
+                      ("logo_wordmark", "wordmark.png")):
+        src = resolve(brand.get(key, ""))
         if src:
             shutil.copyfile(src, public / "brand" / name)
             changed.append(f"web/public/brand/{name}")
@@ -436,7 +443,7 @@ EXPOSE 80
 """)
     log("Wrote Dockerfile.vanguard and nginx.vanguard.conf. Build and run with:")
     log("  docker build -f Dockerfile.vanguard -t vanguard-takeoff . "
-        "&& docker run -d --restart unless-stopped -p 8081:80 vanguard-takeoff")
+        "&& docker run -d --restart unless-stopped -p 8090:80 vanguard-takeoff")
 
 
 # --------------------------------------------------------------------------
@@ -468,7 +475,8 @@ def main() -> None:
         if name in {"serve", "all"}:
             sp.add_argument("--host", default="0.0.0.0",
                             help="use 0.0.0.0 to reach it from other devices on your network")
-            sp.add_argument("--port", type=int, default=8081)
+            # 8000 and 8081 are used by the DrywallApp (backend + Expo).
+            sp.add_argument("--port", type=int, default=8090)
         if name == "init-config":
             sp.add_argument("--force", action="store_true")
     args = p.parse_args()

@@ -1,4 +1,4 @@
-# Modifications by Vanguard Drywall
+# Modifications by Vanguard Drywall & Acoustics
 
 Vanguard Takeoff is a modified version of OpenTakeoff (https://github.com/Kentucky-ai/opentakeoff), used under the Apache License 2.0.
 The original LICENSE and NOTICE files are retained unchanged.
@@ -9,15 +9,16 @@ NOT used here; do not merge them into this repository.
 
 Manual changes: removed upstream analytics, Netlify forms, premium
 sign-up prompts, upstream privacy/terms pages and marketing files;
-replaced the logo marks, favicon, page title and static page; hid the
-"Connect your AI" feature (it installs the newer AGPL MCP package);
-renamed downloaded file names; updated tests and the MCP DXF guard to the
-new name; added README.md, takeoff.py, brand.json and docs/USER_GUIDE.md.
+replaced the logo marks, favicon, page title and static page.
 
 Files modified by takeoff.py brand on 2026-11-17:
 
 - web/bench/ocr-codes/index.html
 - web/index.html
+- web/public/apple-touch-icon.png
+- web/public/brand/logo.png
+- web/public/brand/wordmark.png
+- web/public/favicon.png
 - web/public/vanguard-theme.css (new)
 - web/review/workspace-integrity.html
 - web/src/components/ConnectAI.jsx
