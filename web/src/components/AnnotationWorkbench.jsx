@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from '../brand/icons.jsx';
+import { mintUuid } from '../lib/provenance.js';
 import { ANNOTATION_DEFAULTS, ANNOTATION_PRESETS, annotationStyle, annotationScene, pathString, box, bounds, intersects, markupBounds, shiftedMarkup, textMatches } from '../lib/annotationTools.js';
 import ToolMenu from './ToolMenu.jsx';
 import './AnnotationWorkbench.css';
@@ -12,7 +13,7 @@ const toolIcon = name => name === 'arrow' ? <ArrowIcon/> : name === 'symbol' ? <
 const norm = (q,p) => [(q[0]-p.xOffset)/p.img.w,q[1]/p.img.h];
 const local = (q,p) => [q[0]-p.xOffset,q[1]];
 const stagePoint = (q,p) => [q[0]*p.img.w+p.xOffset,q[1]*p.img.h];
-const id = () => `mk_${crypto.randomUUID()}`;
+const id = () => `mk_${mintUuid()}`;
 const distance = (p,a,b) => { const dx=b[0]-a[0],dy=b[1]-a[1],t=Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/(dx*dx+dy*dy||1))); return Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy); };
 
 export function AnnotationInk({ markup, panel, selected=false, zoom=1 }) {

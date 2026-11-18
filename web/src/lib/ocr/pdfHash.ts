@@ -1,3 +1,4 @@
+import { sha256HexSync } from "../sha256.js";
 // A PDF's content hash as the OCR page cache's identity (#471), and the rule
 // for which cached reads go when a local file is removed. No imports: the
 // store (main bundle) uses this file, so it must not pull OCR code in.
@@ -26,7 +27,16 @@ export function ocrCachePrefix(hash: string): string {
  * hand the same buffer to pdf.js (which may detach it) right after. */
 export function startPdfHash(bytes: ArrayBuffer | ArrayBufferView): Promise<string | null> {
   const subtle = globalThis.crypto?.subtle;
-  if (!subtle || !bytes || !bytes.byteLength) return Promise.resolve(null);
+  if (!bytes || !bytes.byteLength) return Promise.resolve(null);
+  if (!subtle) {
+    // Plain-HTTP deployment: hash now, synchronously, before pdf.js can detach the buffer.
+    try {
+      const hex = sha256HexSync(bytes);
+      return Promise.resolve(isPdfHash(hex) ? hex : null);
+    } catch {
+      return Promise.resolve(null);
+    }
+  }
   let digest: Promise<ArrayBuffer>;
   try {
     digest = subtle.digest("SHA-256", bytes as Parameters<typeof subtle.digest>[1]);

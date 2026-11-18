@@ -1,10 +1,11 @@
+import { mintUuid } from "../lib/provenance.js";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../brand/icons.jsx";
 import { PREMIUM_FORM, ROLES, premiumPayload, sendPremiumInterest, writePremiumPrompt } from "../lib/premiumInterest.js";
 import "./premiumInterest.css";
 
 export default function PremiumInterest({ onClose, onOpenChange }) {
-  const dialog = useRef(null), busy = useRef(false), requestId = useRef(crypto.randomUUID());
+  const dialog = useRef(null), busy = useRef(false), requestId = useRef(mintUuid());
   const [state, setState] = useState("idle"), [error, setError] = useState("");
   const [available] = useState(() => {
     const definition = document.querySelector(`form[name="${PREMIUM_FORM}"][hidden]`);

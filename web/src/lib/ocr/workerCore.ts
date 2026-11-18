@@ -1,3 +1,4 @@
+import { sha256Hex } from "../sha256.js";
 // The on-device OCR worker's logic (#469), with every browser dependency
 // injected so Node can test it. src/ocr.worker.ts is the thin shell that
 // wires in the real fetch, Cache Storage, onnxruntime-web and ppu-paddle-ocr.
@@ -123,10 +124,7 @@ export class OcrCoreError extends Error {
   }
 }
 
-const subtleDigest = async (buf: ArrayBuffer): Promise<string> => {
-  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
-  return Array.from(h, (b) => b.toString(16).padStart(2, "0")).join("");
-};
+const subtleDigest = (buf: ArrayBuffer): Promise<string> => sha256Hex(buf);
 
 const ENGINE_FILES = { detection: "det", recognition: "rec", charactersDictionary: "dict" } as const;
 

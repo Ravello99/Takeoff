@@ -204,11 +204,8 @@ async function txDecide(db, stores, fn) {
 }
 
 // SHA-256 of a PDF's bytes as lowercase hex — the identity a revision is keyed
-// on. WebCrypto is available in every target (browsers, the Node 24 test env).
-async function sha256Hex(bytes) {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
-}
+// on. sha256.js falls back to pure JS where WebCrypto is missing (plain HTTP).
+import { sha256Hex } from "./sha256.js";
 
 // A legacy record's hash (written before v3, none stored): hashed once per
 // session and not written back here. Only addPdf writes PDF records, and it
