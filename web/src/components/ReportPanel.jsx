@@ -1,3 +1,4 @@
+import { laborSummary } from "../lib/labor.js";
 // ReportPanel — the takeoff deliverable. A STACK-style breakdown by condition
 // (finish): measured quantity, waste %, and waste-adjusted order quantity, with
 // a grand total. Exports to CSV / JSON, prints, and hosts the opt-in
@@ -93,6 +94,8 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   const bySheet = useMemo(() => sheetTotals(conditions, shapes), [conditions, shapes]);
   const g = useMemo(() => grandTotals(rows), [rows]);
   const matSummary = useMemo(() => materialsSummary(rows), [rows]);
+  const labor = useMemo(() => laborSummary(rows), [rows]);   // Vanguard: priced labor lines
+  const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const [showContribute, setShowContribute] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   // whether the Marked Set PDF carries the markups. Default on; ORTHOGONAL to the
@@ -897,6 +900,42 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
             </p>
           </div>
         )}
+        {labor.lines.length > 0 && (
+          <div style={{ maxWidth: 980, margin: "26px auto 0" }}>
+            <h3 style={{ fontFamily: "var(--f-display)", fontSize: 12, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink)", margin: "0 0 10px", paddingBottom: 5, borderBottom: "1.5px solid var(--ink)" }}>Labor</h3>
+            <table style={{ width: "100%", borderCollapse: "collapse", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)" }}>
+              <thead>
+                <tr>
+                  <th style={{ ...th, textAlign: "left" }}>Assembly</th>
+                  <th style={{ ...th, textAlign: "left" }}>Item</th>
+                  <th style={th}>Quantity</th>
+                  <th style={{ ...th, textAlign: "left", paddingLeft: 16 }}>Unit</th>
+                  <th style={th}>Rate</th>
+                  <th style={th}>Labor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {labor.lines.map((l, i) => (
+                  <tr key={i}>
+                    <td style={{ ...td, textAlign: "left", fontFamily: "var(--f-mono)" }}>{l.finish_tag}</td>
+                    <td style={{ ...td, textAlign: "left" }}>{l.name}</td>
+                    <td style={td}>{num(l.qty, 2)}</td>
+                    <td style={{ ...td, textAlign: "left", paddingLeft: 16, color: "var(--ink-muted)" }}>{l.unit}</td>
+                    <td style={td}>{money(l.rate)}</td>
+                    <td style={{ ...td, fontWeight: 700 }}>{money(l.cost)}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td style={{ ...td, textAlign: "left", fontWeight: 700, borderTop: "1.5px solid var(--ink)" }} colSpan={5}>Total labor</td>
+                  <td style={{ ...td, fontWeight: 700, borderTop: "1.5px solid var(--ink)", color: "var(--cobalt)" }}>{money(labor.total)}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p style={{ margin: "10px auto 0", fontSize: 11.5, color: "var(--ink-muted)", lineHeight: 1.6 }}>
+              Labor = measured quantity × rate, set per material line in the Assembly builder. Wall SF lines count the sides (and board layers) they apply to; waste isn't added to labor.
+            </p>
+          </div>
+        )}
         {matSummary.length > 0 && (
           <div style={{ maxWidth: 980, margin: "26px auto 0" }}>
             <h3 style={{ fontFamily: "var(--f-display)", fontSize: 12, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink)", margin: "0 0 10px", paddingBottom: 5, borderBottom: "1.25px solid var(--ink)" }}>Supporting materials — buy list</h3>
@@ -928,7 +967,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
                 <React.Fragment key={r.id}>
                   <span style={{ marginRight: 14, display: "inline-block" }}>
                     <strong style={{ fontFamily: "var(--f-mono)" }}>{r.finish_tag}</strong>{" "}
-                    {r.materials.map((m) => `${m.name} ${num(m.qty, 2)}${m.unit ? " " + m.unit : ""}${m.note ? ` (${m.note})` : ""}`).join(" · ")}
+                    {r.materials.filter((m) => m.kind !== "labor").map((m) => `${m.name} ${num(m.qty, 2)}${m.unit ? " " + m.unit : ""}${m.note ? ` (${m.note})` : ""}`).join(" · ")}
                   </span>{" "}
                 </React.Fragment>
               ))}

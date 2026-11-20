@@ -38,6 +38,10 @@ export const libFields = (lm) => ({
   // Vanguard: Layers / Stud O.C. scaling travels with the material (lib/assembly.js)
   ...(lm.scale ? { scale: lm.scale } : {}),
   ...(lm.layers_base ? { layers_base: lm.layers_base } : {}),
+  // Vanguard: labor rate travels with the material (lib/labor.js)
+  ...(lm.labor_unit ? { labor_unit: lm.labor_unit } : {}),
+  ...(lm.labor_rate ? { labor_rate: lm.labor_rate } : {}),
+  ...(lm.labor_sides ? { labor_sides: lm.labor_sides } : {}),
 });
 
 // overridden = this line's field differs from its linked library entry

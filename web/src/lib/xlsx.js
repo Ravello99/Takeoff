@@ -14,6 +14,7 @@
 // the on-screen table: waste applied only to order quantities, never measured.
 
 import { GETTERS, colGetter, applyUnits, METRIC_CSV_LABELS } from "./reportColumns.js";
+import { laborSummary } from "./labor.js";
 import { grandTotals, materialsSummary, roundSheetRow, hasMultipliers, BY_SHEET_BASE_NOTE } from "./totals.js";
 import { round2 } from "./num.js";
 import { M_PER_FT, M2_PER_SF } from "./units";
@@ -209,6 +210,7 @@ export function reportWorkbook({ rows = [], bySheet = [], shapeRows = [], cols =
   const basisLabel = (b) => (b === "linear" ? "LF" : b === "count" ? "EA" : b === "seam_lf" ? "seam LF" : b === "perimeter" ? "perimeter LF" : "SF");
   const materials = [["Finish", "Material", "Qty", "Unit", "Coverage", "Note"]];
   for (const r of rows) for (const m of (r.materials || [])) {
+    if (m.kind === "labor") continue;   // Vanguard: labor-only lines buy nothing
     materials.push([r.finish_tag, m.name, m.qty, m.unit, `1 ${m.unit || "unit"} / ${m.per} ${basisLabel(m.basis)}`, m.note || ""]);
   }
   const combined = materialsSummary(rows);
@@ -256,6 +258,14 @@ export function reportWorkbook({ rows = [], bySheet = [], shapeRows = [], cols =
     { name: "Conditions", rows: conditions },
     { name: "By sheet", rows: bySheetRows },
     { name: "Materials", rows: materials },
+    ...(() => {   // Vanguard: Labor sheet when any line carries a labor rate
+      const L = laborSummary(rows);
+      if (!L.lines.length) return [];
+      const out = [["Assembly", "Item", "Qty", "Unit", "Rate", "Labor"]];
+      for (const l of L.lines) out.push([l.finish_tag, l.name, l.qty, l.unit, l.rate, l.cost]);
+      out.push([], ["Total labor", "", "", "", "", L.total]);
+      return [{ name: "Labor", rows: out }];
+    })(),
     { name: "Shapes", rows: shapesTab },
     { name: "By floor × room", rows: floorRoom },
   ];

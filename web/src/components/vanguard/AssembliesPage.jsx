@@ -13,6 +13,7 @@ import { conditionTotals } from "../../lib/totals.js";
 import { DRYWALL_DEFAULTS } from "../../lib/drywallDefaults.js";
 import { LAYER_OPTIONS, STUD_OC_OPTIONS } from "../../lib/assembly.js";
 import { ColorSwatch, PALETTE } from "../hatches.jsx";
+import { LABOR_UNITS, guessLaborUnit, laborSummary } from "../../lib/labor.js";
 import { CATEGORIES, categoryOf, groupByCategory } from "../../lib/categories.js";
 import "../../styles/vanguardAssemblies.css";
 
@@ -56,7 +57,10 @@ function preview(t) {
   }[t.measure] || "1,000 SF";
   const cond = { ...t, id: "p", multiplier: 1 };
   const [row] = conditionTotals([cond], [{ id: "s", condition_id: "p", ...sample }]);
-  return { label, materials: row?.materials || [] };
+  const labor = laborSummary(row ? [row] : []);
+  const unitDiv = { wall: [100, "LF of wall"], area: [1000, "SF"], line: [100, "LF"], count: [10, "EA"] }[t.measure];
+  const per = unitDiv && labor.total ? `$${(labor.total / unitDiv[0]).toFixed(2)} per ${unitDiv[1]}` : "";
+  return { label, materials: row?.materials || [], labor, per };
 }
 
 export default function AssembliesPage() {
@@ -94,8 +98,19 @@ export default function AssembliesPage() {
   const t = templates?.[selected];
   const patch = (p) => updateTemplates(templates.map((x, i) => (i === selected ? { ...x, ...p } : x)));
   const patchMat = (mi, p) => patch({ materials: t.materials.map((m, i) => (i === mi ? { ...m, ...p } : m)) });
+  const wallSides = () => (t.materials.some((m) => Number(m.labor_sides) === 2 || /each side/i.test(m.note || "")) ? 2 : 1);
+  const withLabor = (line) => {
+    const unit = line.labor_unit ?? guessLaborUnit(line);
+    return { ...line, labor_unit: unit, ...(unit === "SF" && t.measure === "wall" && !line.labor_sides ? { labor_sides: wallSides() } : {}) };
+  };
+  const addLaborItem = () => {
+    const basis = t.measure === "count" ? "count" : t.measure === "line" ? "linear" : "area";
+    const unit = basis === "count" ? "EA" : basis === "linear" ? "LF" : "SF";
+    patch({ materials: [...t.materials, { name: t.measure === "count" ? "Install" : "Labor", kind: "labor", per: 1, basis, unit: "", round: false, note: "",
+      labor_unit: unit, labor_rate: 0, ...(unit === "SF" && t.measure === "wall" ? { labor_sides: wallSides() } : {}) }] });
+  };
   const addMat = (lm, at = t.materials.length) => {
-    const line = { ...libFields(lm), round: true, lib_id: lm.id };
+    const line = withLabor({ ...libFields(lm), round: true, lib_id: lm.id });
     const mats = [...t.materials]; mats.splice(at, 0, line);
     patch({ materials: mats });
   };
@@ -223,26 +238,48 @@ export default function AssembliesPage() {
                   }}>
                   <span className="va-grip" aria-hidden>⠿</span>
                   <input className="va-mat-name" value={m.name} onChange={(e) => patchMat(mi, { name: e.target.value })} aria-label="Material name" />
-                  <span className="va-rate">1
+                  {m.kind === "labor" ? <span className="va-laboronly">Labor only, nothing to buy</span> : <span className="va-rate">1
                     <input className="va-unit" value={m.unit || ""} onChange={(e) => patchMat(mi, { unit: e.target.value })} aria-label="Unit" placeholder="unit" />
                     per<input className="va-per" type="number" min="0" step="0.01" value={m.per ?? 0} onChange={(e) => patchMat(mi, { per: Number(e.target.value) || 0 })} aria-label="Coverage" />
                     <select value={m.basis || "area"} onChange={(e) => patchMat(mi, { basis: e.target.value })} aria-label="Measured in">{BASES.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}</select>
-                  </span>
-                  <select className="va-scale" value={m.scale || ""} onChange={(e) => patchMat(mi, { scale: e.target.value || undefined, ...(e.target.value === "layers" && !m.layers_base ? { layers_base: 1 } : {}) })} aria-label="Adjusts with">
+                  </span>}
+                  {m.kind === "labor" ? <span /> : <select className="va-scale" value={m.scale || ""} onChange={(e) => patchMat(mi, { scale: e.target.value || undefined, ...(e.target.value === "layers" && !m.layers_base ? { layers_base: 1 } : {}) })} aria-label="Adjusts with">
                     {SCALES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-                  </select>
+                  </select>}
                   <button className="va-remove" onClick={() => patch({ materials: t.materials.filter((_, i) => i !== mi) })} title="Remove from this assembly" aria-label="Remove">×</button>
-                  {<input className="va-note" value={m.note || ""} placeholder="note" onChange={(e) => patchMat(mi, { note: e.target.value })} aria-label="Note" />}
+                  <div className="va-subrow">
+                    <span className={`va-labor${m.labor_unit && m.labor_rate > 0 ? " is-priced" : ""}`}>
+                      Labor $<input className="va-lrate" type="number" min="0" step="0.01" value={m.labor_rate ?? ""} placeholder="0.00"
+                        onChange={(e) => patchMat(mi, { labor_rate: e.target.value === "" ? undefined : Math.max(0, Number(e.target.value) || 0), ...(m.labor_unit ? {} : { labor_unit: guessLaborUnit(m) || "SF" }) })} aria-label="Labor rate" />
+                      <select value={m.labor_unit || ""} onChange={(e) => patchMat(mi, { labor_unit: e.target.value, ...(e.target.value === "SF" && t.measure === "wall" && !m.labor_sides ? { labor_sides: wallSides() } : {}) })} aria-label="Labor unit">
+                        {LABOR_UNITS.map((u) => <option key={u.id} value={u.id}>{u.id === "unit" ? `per ${m.unit || "unit"} bought` : u.label}</option>)}
+                      </select>
+                      {m.labor_unit === "SF" && t.measure === "wall" && (
+                        <select value={m.labor_sides || 1} onChange={(e) => patchMat(mi, { labor_sides: Number(e.target.value) })} aria-label="Wall sides" title="Sides of the wall this applies to">
+                          <option value={1}>× 1 side</option><option value={2}>× 2 sides</option>
+                        </select>)}
+                    </span>
+                    <input className="va-note" value={m.note || ""} placeholder="note" onChange={(e) => patchMat(mi, { note: e.target.value })} aria-label="Note" />
+                  </div>
                 </div>
               ))}
             </div>
+
+            <button className="vp-btn va-laborbtn" onClick={addLaborItem}>+ Labor-only item</button>
 
             {t.materials.length > 0 && (() => {
               const pv = preview(t);
               return (
                 <div className="va-preview">
                   <h3>For {pv.label} this orders:</h3>
-                  <ul>{pv.materials.map((m, i) => <li key={i}><strong>{m.qty}</strong> {m.unit} <span className="vp-muted">{m.name}</span></li>)}</ul>
+                  <ul>{pv.materials.filter((m) => m.kind !== "labor").map((m, i) => <li key={i}><strong>{m.qty}</strong> {m.unit} <span className="vp-muted">{m.name}</span></li>)}</ul>
+                  {pv.labor.lines.length > 0 && (<>
+                    <h3 className="va-labor-h">Labor</h3>
+                    <table className="va-labor-table"><tbody>
+                      {pv.labor.lines.map((l, i) => <tr key={i}><td>{l.name}</td><td>{l.qty.toLocaleString()} {l.unit}</td><td>@ ${l.rate.toFixed(2)}</td><td><strong>${l.cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td></tr>)}
+                      <tr className="va-labor-total"><td colSpan={3}>Labor total{pv.per ? ` (${pv.per})` : ""}</td><td><strong>${pv.labor.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td></tr>
+                    </tbody></table>
+                  </>)}
                 </div>
               );
             })()}

@@ -20,6 +20,7 @@
 
 import { round2 } from "./num.js";
 import { effectivePer, scaledText } from "./assembly.js";
+import { laborFor } from "./labor.js";
 import { REPORT_SCHEMA } from "./takeoffConstants.ts";
 import { csvEsc as esc } from "./csv.js";
 import { GETTERS, CSV_PROFILE, colGetter, floorPerimeterLf, applyUnits, METRIC_CSV_LABELS } from "./reportColumns.js";
@@ -94,7 +95,10 @@ export function conditionTotals(conditions, shapes, ctx = null) {
       const basisVal = m.basis === "linear" ? lf : m.basis === "count" ? ea : m.basis === "seam_lf" ? seam : m.basis === "perimeter" ? perim : total;
       let qty = per > 0 ? basisVal / per : 0;
       qty = m.round === false ? round2(qty) : Math.ceil(qty - 1e-9);
-      return { name: mName, unit: m.unit || "", per, basis: m.basis || "area", round: m.round !== false, note: mNote, basis_qty: round2(basisVal), qty };
+      // Vanguard: labor priced in the line's own unit (lib/labor.js)
+      const labor = laborFor(m, { sf: total, lf, ea, perim, qty, layers: c.board_layers });
+      return { name: mName, unit: m.unit || "", per, basis: m.basis || "area", round: m.round !== false, note: mNote, basis_qty: round2(basisVal), qty,
+        ...(m.kind === "labor" ? { kind: "labor" } : {}), ...(labor || {}) };
     });
     return {
       id: c.id, finish_tag: c.finish_tag, color: c.color, fill: c.fill, hatch: c.hatch,
@@ -354,6 +358,7 @@ export function verticalWallSf(shapes, conditionId, heightFt, multiplier = 1) {
 export function materialsSummary(rows) {
   const map = new Map();
   for (const r of rows) for (const m of (r.materials || [])) {
+    if (m.kind === "labor") continue;   // Vanguard: labor-only lines buy nothing
     const key = `${m.name}\x00${m.unit}`;
     const cur = map.get(key) || { name: m.name, unit: m.unit, qty: 0 };
     cur.qty += m.qty;

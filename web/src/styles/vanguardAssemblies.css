@@ -78,3 +78,17 @@
 .va-libtext small { font-size: 11.5px; color: var(--vp-muted); }
 .va-newmat { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-top: 1px solid var(--vp-line); }
 .va-newmat-btn { margin: 8px 10px 0; }
+
+/* labor */
+.va-subrow { grid-column: 2 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.va-subrow .va-note { flex: 1; min-width: 140px; grid-column: auto; }
+.va-labor { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--vp-muted); background: #F7F8FA; border: 1px solid #EEF0F4; border-radius: 8px; padding: 3px 6px; }
+.va-labor.is-priced { background: #ECFDF3; border-color: #ABEFC6; color: #067647; }
+.va-lrate { width: 72px; }
+.va-laboronly { font-size: 12.5px; color: var(--vp-muted); font-style: italic; }
+.va-laborbtn { margin-top: 8px; }
+.va-labor-h { margin: 12px 0 6px !important; }
+.va-labor-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.va-labor-table td { padding: 3px 6px; border-top: 1px solid #E3E8F2; }
+.va-labor-table td:last-child, .va-labor-table td:nth-child(3) { text-align: right; white-space: nowrap; }
+.va-labor-total td { border-top: 2px solid #C9D3E6; }

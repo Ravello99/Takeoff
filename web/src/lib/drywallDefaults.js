@@ -1,3 +1,4 @@
+import { guessLaborUnit } from "./labor.js";
 // Vanguard Takeoff — default conditions for commercial interior drywall.
 //
 // A fresh workspace is seeded with these when the browser's template library
@@ -58,7 +59,7 @@ const batts = (thk) => ({ name: `Acoustic batt insulation ${thk}`, per: 1, basis
 const WALL = "Measure: Wall tool — trace the wall line; set height to top of wall";
 const CEIL = "Measure: Area tool — trace the ceiling area";
 
-export const DRYWALL_DEFAULTS = [
+const BASE_DEFAULTS = [
   // ── Partitions ────────────────────────────────────────────────────────────
   { finish_tag: "W1", category: "Walls", measure: "wall", board_layers: 1, stud_oc_in: 16, color: "#0B2556", hatch: "solid", waste_pct: 10, height_ft: 10,
     spec: { description: "Non-rated partition: 3-5/8\" 25ga studs @ 16\" o.c., 1 layer 5/8\" Type X each side, to 6\" above ceiling", remarks: WALL },
@@ -184,3 +185,17 @@ export const DRYWALL_DEFAULTS = [
   { finish_tag: "DF", category: "Doors & panels", measure: "count", color: "#4f46e5", hatch: "solid", waste_pct: 0,
     spec: { description: "Hollow metal door frame (install in stud wall)", remarks: "Measure: Count tool" }, materials: [] },
 ];
+
+// Labor units on every line (rates left blank — Vanguard's own numbers go in
+// the Assembly builder). On walls, SF labor counts the sides that get board:
+// 2 when the board line says "each side", else 1.
+export const DRYWALL_DEFAULTS = BASE_DEFAULTS.map((t) => {
+  const sides = t.measure === "wall" && (t.materials || []).some((m) => /each side/i.test(m.note || "")) ? 2 : 1;
+  return {
+    ...t,
+    materials: (t.materials || []).map((m) => {
+      const labor_unit = guessLaborUnit(m);
+      return { ...m, labor_unit, ...(labor_unit === "SF" && t.measure === "wall" ? { labor_sides: sides } : {}) };
+    }),
+  };
+});
