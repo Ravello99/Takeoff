@@ -14,6 +14,7 @@ import { DRYWALL_DEFAULTS } from "../../lib/drywallDefaults.js";
 import { LAYER_OPTIONS, STUD_OC_OPTIONS } from "../../lib/assembly.js";
 import { ColorSwatch, PALETTE } from "../hatches.jsx";
 import { LABOR_UNITS, guessLaborUnit, laborSummary } from "../../lib/labor.js";
+import { money } from "../../lib/materialCatalog.js";
 import { CATEGORIES, categoryOf, groupByCategory } from "../../lib/categories.js";
 import "../../styles/vanguardAssemblies.css";
 
@@ -60,7 +61,9 @@ function preview(t) {
   const labor = laborSummary(row ? [row] : []);
   const unitDiv = { wall: [100, "LF of wall"], area: [1000, "SF"], line: [100, "LF"], count: [10, "EA"] }[t.measure];
   const per = unitDiv && labor.total ? `$${(labor.total / unitDiv[0]).toFixed(2)} per ${unitDiv[1]}` : "";
-  return { label, materials: row?.materials || [], labor, per };
+  const matCost = Math.round((row?.materials || []).reduce((n, m) => n + (m.cost || 0), 0) * 100) / 100;
+  const totalPer = unitDiv && (matCost + labor.total) ? `$${((matCost + labor.total) / unitDiv[0]).toFixed(2)} per ${unitDiv[1]}` : "";
+  return { label, materials: row?.materials || [], labor, per, matCost, totalPer };
 }
 
 export default function AssembliesPage() {
@@ -272,7 +275,8 @@ export default function AssembliesPage() {
               return (
                 <div className="va-preview">
                   <h3>For {pv.label} this orders:</h3>
-                  <ul>{pv.materials.filter((m) => m.kind !== "labor").map((m, i) => <li key={i}><strong>{m.qty}</strong> {m.unit} <span className="vp-muted">{m.name}</span></li>)}</ul>
+                  <ul>{pv.materials.filter((m) => m.kind !== "labor").map((m, i) => <li key={i}><strong>{m.qty}</strong> {m.unit} <span className="vp-muted">{m.name}</span>{m.cost != null ? <span className="va-cost"> {money(m.cost)}</span> : null}</li>)}</ul>
+                  {pv.matCost > 0 && <p className="va-costline">Material cost <strong>{money(pv.matCost)}</strong>{pv.labor.total > 0 && <> · labor <strong>{money(pv.labor.total)}</strong> · total <strong>{money(pv.matCost + pv.labor.total)}</strong>{pv.totalPer ? ` (${pv.totalPer})` : ""}</>}</p>}
                   {pv.labor.lines.length > 0 && (<>
                     <h3 className="va-labor-h">Labor</h3>
                     <table className="va-labor-table"><tbody>
@@ -288,7 +292,7 @@ export default function AssembliesPage() {
 
         {/* ── material library ──────────────────────────────────────────── */}
         <aside className="va-col va-lib">
-          <h2 className="va-h2">Material library</h2>
+          <h2 className="va-h2">Material library <a className="va-manage" href="/materials">Manage prices →</a></h2>
           <input className="va-search" placeholder="Search materials…" value={libQuery} onChange={(e) => setLibQuery(e.target.value)} aria-label="Search materials" />
           {library.length === 0 && (
             <div className="va-lib-empty">
@@ -301,7 +305,7 @@ export default function AssembliesPage() {
               <div key={m.id} className="va-libitem" draggable
                 onDragStart={(e) => { e.dataTransfer.setData("application/x-vg-mat", m.id); e.dataTransfer.effectAllowed = "copy"; }}>
                 <span className="va-grip" aria-hidden>⠿</span>
-                <span className="va-libtext"><strong>{m.name}</strong><small>1 {m.unit || "unit"} per {m.per} {BASES.find((b) => b.id === (m.basis || "area"))?.label}{m.scale ? " · adjusts" : ""}</small></span>
+                <span className="va-libtext"><strong>{m.name}</strong><small>{m.unit_cost != null ? `${money(m.unit_cost)}/${m.unit || "unit"} · ` : ""}1 {m.unit || "unit"} per {m.per} {BASES.find((b) => b.id === (m.basis || "area"))?.label}{m.manufacturer ? ` · ${m.manufacturer}` : ""}</small></span>
                 {t && <button className="va-add" title="Add to the selected assembly" onClick={() => addMat(m)}>+</button>}
                 <button className="va-remove" title="Delete from the library (assemblies keep their copy)" onClick={() => { if (window.confirm(`Delete “${m.name}” from the material library? Assemblies already using it keep their copy.`)) updateLibrary(library.filter((x) => x.id !== m.id)); }}>×</button>
               </div>

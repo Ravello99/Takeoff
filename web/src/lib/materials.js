@@ -42,6 +42,11 @@ export const libFields = (lm) => ({
   ...(lm.labor_unit ? { labor_unit: lm.labor_unit } : {}),
   ...(lm.labor_rate ? { labor_rate: lm.labor_rate } : {}),
   ...(lm.labor_sides ? { labor_sides: lm.labor_sides } : {}),
+  // Vanguard: catalog price and product data (lib/materialCatalog.js)
+  ...(lm.unit_cost != null ? { unit_cost: lm.unit_cost } : {}),
+  ...(lm.sku ? { sku: lm.sku } : {}),
+  ...(lm.manufacturer ? { manufacturer: lm.manufacturer } : {}),
+  ...(lm.supplier ? { supplier: lm.supplier } : {}),
 });
 
 // overridden = this line's field differs from its linked library entry

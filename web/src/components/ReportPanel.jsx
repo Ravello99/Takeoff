@@ -95,6 +95,8 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   const g = useMemo(() => grandTotals(rows), [rows]);
   const matSummary = useMemo(() => materialsSummary(rows), [rows]);
   const labor = useMemo(() => laborSummary(rows), [rows]);   // Vanguard: priced labor lines
+  const matCost = useMemo(() => matSummary.reduce((n, m) => n + (m.cost || 0), 0), [matSummary]);
+  const hasCost = matSummary.some((m) => m.unit_cost != null);
   const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const [showContribute, setShowContribute] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
@@ -900,6 +902,16 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
             </p>
           </div>
         )}
+        {(hasCost || labor.lines.length > 0) && (
+          <div style={{ maxWidth: 980, margin: "26px auto 0", display: "flex", gap: 12, flexWrap: "wrap" }}>
+            {[["Materials", matCost], ["Labor", labor.total], ["Materials + labor", matCost + labor.total]].map(([k, v], i) => (
+              <div key={k} style={{ flex: "1 1 200px", border: "1px solid var(--ink-faint)", background: i === 2 ? "var(--cobalt)" : "var(--paper-bright)", color: i === 2 ? "var(--accent-contrast)" : "var(--ink)", padding: "12px 16px" }}>
+                <div style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", opacity: 0.8 }}>{k}</div>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>{money(v)}</div>
+              </div>
+            ))}
+          </div>
+        )}
         {labor.lines.length > 0 && (
           <div style={{ maxWidth: 980, margin: "26px auto 0" }}>
             <h3 style={{ fontFamily: "var(--f-display)", fontSize: 12, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink)", margin: "0 0 10px", paddingBottom: 5, borderBottom: "1.5px solid var(--ink)" }}>Labor</h3>
@@ -945,6 +957,8 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
                   <th style={{ ...th, textAlign: "left" }}>Material</th>
                   <th style={th}>Quantity</th>
                   <th style={{ ...th, textAlign: "left", paddingLeft: 16 }}>Unit</th>
+                  {hasCost && <th style={th}>Unit cost</th>}
+                  {hasCost && <th style={th}>Cost</th>}
                 </tr>
               </thead>
               <tbody>
@@ -953,8 +967,16 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
                     <td style={{ ...td, textAlign: "left" }}>{m.name}</td>
                     <td style={{ ...td, fontWeight: 700 }}>{num(m.qty, 2)}</td>
                     <td style={{ ...td, textAlign: "left", paddingLeft: 16, color: "var(--ink-muted)" }}>{m.unit || "—"}</td>
+                    {hasCost && <td style={td}>{m.unit_cost != null ? money(m.unit_cost) : "—"}</td>}
+                    {hasCost && <td style={{ ...td, fontWeight: 700 }}>{m.cost != null ? money(m.cost) : "—"}</td>}
                   </tr>
                 ))}
+                {hasCost && (
+                  <tr>
+                    <td style={{ ...td, textAlign: "left", fontWeight: 700, borderTop: "1.5px solid var(--ink)" }} colSpan={4}>Total materials</td>
+                    <td style={{ ...td, fontWeight: 700, borderTop: "1.5px solid var(--ink)", color: "var(--cobalt)" }}>{money(matCost)}</td>
+                  </tr>
+                )}
               </tbody>
             </table>
             <p style={{ maxWidth: 980, margin: "10px auto 0", fontSize: 11.5, color: "var(--ink-muted)", lineHeight: 1.7 }}>

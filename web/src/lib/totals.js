@@ -98,7 +98,10 @@ export function conditionTotals(conditions, shapes, ctx = null) {
       // Vanguard: labor priced in the line's own unit (lib/labor.js)
       const labor = laborFor(m, { sf: total, lf, ea, perim, qty, layers: c.board_layers });
       return { name: mName, unit: m.unit || "", per, basis: m.basis || "area", round: m.round !== false, note: mNote, basis_qty: round2(basisVal), qty,
-        ...(m.kind === "labor" ? { kind: "labor" } : {}), ...(labor || {}) };
+        ...(m.kind === "labor" ? { kind: "labor" } : {}), ...(labor || {}),
+        // Vanguard: material cost from the catalog price (lib/materialCatalog.js)
+        ...(m.kind !== "labor" && m.unit_cost != null && Number.isFinite(Number(m.unit_cost))
+          ? { unit_cost: Number(m.unit_cost), cost: round2(qty * Number(m.unit_cost)) } : {}) };
     });
     return {
       id: c.id, finish_tag: c.finish_tag, color: c.color, fill: c.fill, hatch: c.hatch,
@@ -362,9 +365,10 @@ export function materialsSummary(rows) {
     const key = `${m.name}\x00${m.unit}`;
     const cur = map.get(key) || { name: m.name, unit: m.unit, qty: 0 };
     cur.qty += m.qty;
+    if (m.unit_cost != null) { cur.unit_cost = cur.unit_cost ?? m.unit_cost; cur.cost = (cur.cost || 0) + (m.cost || 0); }
     map.set(key, cur);
   }
-  return [...map.values()].map((x) => ({ ...x, qty: round2(x.qty) }));
+  return [...map.values()].map((x) => ({ ...x, qty: round2(x.qty), ...(x.cost != null ? { cost: round2(x.cost) } : {}) }));
 }
 
 // NB: the CSV TOTAL row emits g[key] for any column key present here — adding

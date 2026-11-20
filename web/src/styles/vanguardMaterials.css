@@ -1,0 +1,48 @@
+/* Vanguard — Materials page */
+.vm-page .va-head { flex-wrap: wrap; }
+.vm-filters { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.vm-filters .va-search { margin: 0; max-width: 460px; background: #fff; }
+.vm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.vm-chips button { border: 1px solid var(--vp-line); background: #fff; border-radius: 16px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; color: #1C2430; }
+.vm-chips button span { color: var(--vp-muted); margin-left: 4px; font-size: 12px; }
+.vm-chips button.is-on { background: var(--vp-navy); border-color: var(--vp-navy); color: #fff; }
+.vm-chips button.is-on span { color: #C9D3E6; }
+.vm-tablewrap { background: #fff; border: 1px solid var(--vp-line); border-radius: 12px; overflow: auto; max-height: calc(100vh - 250px); }
+.vm-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.vm-table th { position: sticky; top: 0; background: #F7F8FA; text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--vp-muted); padding: 9px 10px; border-bottom: 1px solid var(--vp-line); z-index: 1; white-space: nowrap; }
+.vm-table td { padding: 8px 10px; border-top: 1px solid #EEF0F4; vertical-align: middle; }
+.vm-table tbody tr:not(.vm-group) { cursor: pointer; }
+.vm-table tbody tr:not(.vm-group):hover { background: #F7F9FD; }
+.vm-table tr.is-open { background: #EEF2FA !important; }
+.vm-table td strong { display: block; font-weight: 600; }
+.vm-table td small { display: block; font-size: 12px; color: var(--vp-muted); }
+.vm-group td { background: #F2F4F8; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #344054; padding: 6px 10px; }
+.vm-group td span { color: var(--vp-muted); font-weight: 500; margin-left: 6px; }
+.vm-num { text-align: right; white-space: nowrap; }
+.vm-cost { display: inline-flex; align-items: center; gap: 2px; color: var(--vp-muted); }
+.vm-cost input { width: 82px; text-align: right; font: inherit; padding: 4px 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #1C2430; }
+.vm-cost input:hover, .vm-cost input:focus { border-color: var(--vp-line); background: #fff; outline: none; }
+.vm-empty { text-align: center; padding: 24px !important; }
+
+.vm-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(460px, 100vw); background: #fff; box-shadow: -12px 0 40px rgba(15,23,42,.16); z-index: 40; display: flex; flex-direction: column; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1C2430; --vp-line: #DDE2EA; --vp-muted: #5E6878; }
+.vm-drawer header { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 16px 18px 10px; border-bottom: 1px solid var(--vp-line); }
+.vm-drawer header h2 { font-size: 17px; margin: 0; }
+.vm-drawer-body { overflow: auto; flex: 1; padding: 6px 18px 16px; }
+.vm-drawer section { padding: 10px 0; border-bottom: 1px solid #EEF0F4; }
+.vm-drawer h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--vp-muted); margin: 4px 0 8px; }
+.vm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
+.vm-drawer footer { padding: 12px 18px; border-top: 1px solid var(--vp-line); }
+.vm-rate select, .vm-rate input { font: inherit; font-size: 13px; padding: 5px 7px; border: 1px solid var(--vp-line); border-radius: 6px; }
+.vm-rate { flex-wrap: wrap; }
+.vm-history { width: 100%; font-size: 12.5px; border-collapse: collapse; margin-top: 4px; }
+.vm-history td { padding: 3px 4px; border-top: 1px solid #EEF0F4; }
+
+.vm-import { max-width: 680px; }
+.vm-file { display: flex; align-items: center; gap: 10px; border: 2px dashed var(--vp-line, #DDE2EA); border-radius: 10px; padding: 14px; cursor: pointer; margin: 10px 0; }
+.vm-file input { max-width: 220px; }
+.vm-ai { background: #F6F8FC; border: 1px solid #D5DFF0; border-radius: 8px; padding: 8px 12px; color: #344054; }
+.vm-import h3 { font-size: 15px; margin: 14px 0 8px; }
+.vm-review { max-height: 280px; overflow: auto; border: 1px solid var(--vp-line, #DDE2EA); border-radius: 8px; margin-bottom: 10px; }
+.vm-review .vm-table tr { cursor: default; }
+.vm-up { color: #B42318; }
+.vm-down { color: #067647; }

@@ -215,8 +215,10 @@ export function reportWorkbook({ rows = [], bySheet = [], shapeRows = [], cols =
   }
   const combined = materialsSummary(rows);
   if (combined.length) {
-    materials.push([], ["Material (combined)", "Qty", "Unit"]);
-    for (const s of combined) materials.push([s.name, s.qty, s.unit]);
+    const priced = combined.some((s) => s.unit_cost != null);   // Vanguard: catalog prices
+    materials.push([], priced ? ["Material (combined)", "Qty", "Unit", "Unit cost", "Cost"] : ["Material (combined)", "Qty", "Unit"]);
+    for (const s of combined) materials.push(priced ? [s.name, s.qty, s.unit, s.unit_cost ?? "", s.cost ?? ""] : [s.name, s.qty, s.unit]);
+    if (priced) materials.push(["Total materials", "", "", "", Math.round(combined.reduce((n, s) => n + (s.cost || 0), 0) * 100) / 100]);
   }
 
   // Shapes — measured only: no multiplier, no waste (shapesDetail semantics).

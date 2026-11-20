@@ -45,6 +45,21 @@ Run it in the background and on boot (as root):
 python3 takeoff.py service
 ```
 
+## Materials and pricing
+
+The **Materials** page (top bar) is the company material catalog: category,
+product, size, gauge, flange, length, manufacturer, supplier, SKU, cost per
+purchase unit, coverage and default labor. Edit prices right in the table, or
+open a material for every field and its price history. Prices flow into the
+assemblies that use each material; the Assembly builder preview, the Report
+and the Excel export then show material cost, labor and the total.
+
+**Import price list:** upload a supplier's CSV (or Excel saved as CSV). Rows
+are matched by SKU, then by name; you review every change (old → new, % up or
+down) before anything is saved, and unmatched rows can be added as new
+materials. The import is built as a pipeline (rows → match → review → apply)
+so an AI reader for PDF price booklets can feed the same review later.
+
 ## Drywall conditions
 
 New projects start with a commercial interior set: partitions W1–W6, furring

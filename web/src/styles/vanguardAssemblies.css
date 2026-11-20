@@ -92,3 +92,6 @@
 .va-labor-table td { padding: 3px 6px; border-top: 1px solid #E3E8F2; }
 .va-labor-table td:last-child, .va-labor-table td:nth-child(3) { text-align: right; white-space: nowrap; }
 .va-labor-total td { border-top: 2px solid #C9D3E6; }
+.va-manage { float: right; font-size: 12px; font-weight: 600; color: var(--vp-navy); text-decoration: none; margin-right: 8px; }
+.va-cost { color: #067647; font-size: 12px; }
+.va-costline { margin: 10px 0 0; font-size: 13.5px; }
