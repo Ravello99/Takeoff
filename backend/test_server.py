@@ -305,6 +305,7 @@ class ServerTest(unittest.TestCase):
             self.assertEqual((s, out["walls"][0]["tag"]), (200, "P1"))
             sent = seen["body"]["messages"][0]["content"]
             self.assertIsInstance(sent, str)
+            self.assertEqual(seen["body"]["chat_template_kwargs"], {"enable_thinking": False})
             self.assertIn("16mm GYPSUM WALL BOARD", sent)
             self.assertIn("from A002 p3", sent)
             # wrong image type refused

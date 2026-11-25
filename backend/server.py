@@ -43,7 +43,7 @@ from pathlib import Path
 SESSION_DAYS = 30
 RESET_HOURS = 1
 AI_KEYS = ("ai_base_url", "ai_api_key", "ai_model")
-AI_TIMEOUT = 240          # first call after a cold start loads the model
+AI_TIMEOUT = 420          # first call after a cold start loads the model; a long schedule is ~8k tokens of answer
 SCHEDULE_PROMPT = """You are reading a PARTITION (WALL TYPE) SCHEDULE or wall-type legend from a commercial construction drawing.
 List EVERY wall type shown. Return ONLY a JSON array, no prose, no markdown. Each item:
 {"tag": "wall type mark exactly as shown, e.g. 1A, W3, P-2",
@@ -864,7 +864,11 @@ class Handler(BaseHTTPRequestHandler):
         hint = str(body.get("hint") or "").strip()[:500]
         t0 = time.time()
         out = ai_request(cfg, "/chat/completions", {
-            "model": model, "temperature": 0, "max_tokens": 4096,
+            "model": model, "temperature": 0, "max_tokens": 8192,
+            # Qwen3-family models reason out loud before answering unless told not
+            # to: on a 30-type schedule the reasoning alone used up the answer
+            # budget and cut the list off. Reading a schedule needs no reasoning.
+            "chat_template_kwargs": {"enable_thinking": False},
             "messages": [{"role": "user", "content": (
                 SCHEDULE_PROMPT + SCHEDULE_TEXT_NOTE + (f"\nExtra note from the estimator: {hint}" if hint else "")
                 + f"\n\nSCHEDULE TEXT{f' (from {source})' if source else ''}:\n{sched_text}"
@@ -876,6 +880,7 @@ class Handler(BaseHTTPRequestHandler):
         text = ((out.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         if isinstance(text, list):   # some servers return content parts
             text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
         walls = extract_json_array(text)
         cur = c.execute("INSERT INTO ai_log (kind, user_id, image_hash, model, raw, result, ms, created_at) VALUES (?,?,?,?,?,?,?,?)",
                         ("schedule", me["id"], digest, model, text, json.dumps(walls) if walls is not None else None, ms, time.time()))

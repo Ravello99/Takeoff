@@ -4976,6 +4976,7 @@ export default function TakeoffCanvas() {
   // wall-type schedule (lib/scheduleFinder reads each page's text layer), best
   // first. The dialog sends the winner's text to the AI; what comes back is
   // added to THIS project's assemblies, never the company library.
+  const SCHEDULE_CLEAR_SCORE = 150;
   const findScheduleImplRef = useRef(null);
   findScheduleImplRef.current = async (progress) => {
     const files = sheets.map((sh) => sh.name);
@@ -4983,24 +4984,30 @@ export default function TakeoffCanvas() {
     let done = 0, total = 0;
     const counts = [];
     for (const f of files) { try { const pdf = await docFor(f); counts.push([f, pdf.numPages || 1]); total += pdf.numPages || 1; } catch { /* unreadable file */ } }
-    for (const [f, n] of counts) {
-      const pdf = await docFor(f);
-      for (let pg = 1; pg <= n; pg++) {
-        const key = pg > 1 ? `${f}#${pg}` : f;
-        progress(`sheet ${++done} of ${total}`);
-        let hit = schedCacheRef.current.get(key);
-        if (!hit) {
-          try {
-            const page = await pdf.getPage(pg);
-            const vp = page.getViewport({ scale: 1 });
-            const tc = await page.getTextContent();
-            const r = findScheduleOnPage(pageRuns(tc, vp));
-            hit = { key, score: r.score, text: r.text, heading: r.heading, label: `${extractSheetNumber(tc, vp) || labelsForFile(labelsByFile, f)[pg] || `Page ${pg}`}${counts.length > 1 ? ` · ${f}` : ""}` };
-          } catch { hit = { key, score: 0, text: "", heading: null, label: key }; }
-          schedCacheRef.current.set(key, hit);
-        }
-        if (hit.score > 0) out.push(hit);
+    // likely sheets first: ones the plan-search index already knows mention
+    // partitions or gypsum, then the rest in set order (schedules sit early)
+    const order = [];
+    for (const [f, n] of counts) for (let pg = 1; pg <= n; pg++) order.push([f, pg, pg > 1 ? `${f}#${pg}` : f]);
+    const hinted = (key) => { const t = planIndexRef.current.get(key)?.terms; return t && (t.PARTITION || t.PARTITIONS || t.GYPSUM) ? 1 : 0; };
+    order.sort((a, b) => hinted(b[2]) - hinted(a[2]));
+    for (const [f, pg, key] of order) {
+      progress(`sheet ${++done} of ${total}`);
+      let hit = schedCacheRef.current.get(key);
+      if (!hit) {
+        try {
+          const pdf = await docFor(f);
+          const page = await pdf.getPage(pg);
+          const vp = page.getViewport({ scale: 1 });
+          const tc = await page.getTextContent();
+          const r = findScheduleOnPage(pageRuns(tc, vp));
+          hit = { key, score: r.score, text: r.text, heading: r.heading, label: `${extractSheetNumber(tc, vp) || labelsForFile(labelsByFile, f)[pg] || `Page ${pg}`}${counts.length > 1 ? ` · ${f}` : ""}` };
+        } catch { hit = { key, score: 0, text: "", heading: null, label: key }; }
+        schedCacheRef.current.set(key, hit);
       }
+      if (hit.score > 0) out.push(hit);
+      // a clear schedule (a partition heading and plenty of typed walls) ends the
+      // search: reading the other 40 sheets of a big set would only add minutes
+      if (hit.score >= SCHEDULE_CLEAR_SCORE && hit.heading) break;
     }
     return out.sort((a, b) => b.score - a.score).slice(0, 6);
   };
