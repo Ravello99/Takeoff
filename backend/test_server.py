@@ -258,7 +258,7 @@ class ServerTest(unittest.TestCase):
                 self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
             def do_GET(self):
                 seen["auth"] = self.headers.get("Authorization")
-                self._send({"data": [{"id": "Qwen/Qwen3.5-9B"}]})
+                self._send({"data": [{"id": "Qwen/Qwen3.5-9B", "max_model_len": 8128}]})
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 seen["body"] = body
@@ -306,6 +306,8 @@ class ServerTest(unittest.TestCase):
             sent = seen["body"]["messages"][0]["content"]
             self.assertIsInstance(sent, str)
             self.assertEqual(seen["body"]["chat_template_kwargs"], {"enable_thinking": False})
+            self.assertLess(seen["body"]["max_tokens"], 8128)          # sized to fit the served context window
+            self.assertGreater(seen["body"]["max_tokens"], 4000)
             self.assertIn("16mm GYPSUM WALL BOARD", sent)
             self.assertIn("from A002 p3", sent)
             # wrong image type refused

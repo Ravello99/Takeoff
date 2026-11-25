@@ -240,6 +240,27 @@ def ai_model(cfg: dict) -> str:
     return models[0]["id"]
 
 
+def ai_context_len(cfg: dict, model: str) -> int | None:
+    """The served model's context window (vLLM lists max_model_len on /models);
+    None when the server doesn't say."""
+    try:
+        for m_ in ai_request(cfg, "/models", timeout=30).get("data") or []:
+            if m_.get("id") == model and m_.get("max_model_len"):
+                return int(m_["max_model_len"])
+    except ApiError:
+        pass
+    return None
+
+
+def answer_budget(ctx: int | None, prompt_chars: int, has_image: bool, want: int = 8192) -> int:
+    """Answer tokens that fit beside the prompt: ~3.2 characters a token for
+    drawing text, ~1,500 tokens for a picture, and a margin for the chat template."""
+    if not ctx:
+        return want
+    prompt = prompt_chars // 3 + (1500 if has_image else 0) + 300
+    return max(512, min(want, ctx - prompt))
+
+
 def extract_json_array(text: str):
     """Pull the JSON array out of a model reply (tolerates ```json fences and chatter)."""
     t = (text or "").strip()
@@ -863,8 +884,12 @@ class Handler(BaseHTTPRequestHandler):
         model = ai_model(cfg)
         hint = str(body.get("hint") or "").strip()[:500]
         t0 = time.time()
+        ctx = ai_context_len(cfg, model)
+        budget = answer_budget(ctx, len(SCHEDULE_PROMPT) + len(SCHEDULE_TEXT_NOTE) + len(sched_text) + len(hint), not sched_text)
+        if ctx and budget < 1500:
+            raise ApiError(400, f"The AI's context window ({ctx} tokens) is too small for this schedule. Raise --max-model-len on the Pod (e.g. 16384 with --quantization fp8).")
         out = ai_request(cfg, "/chat/completions", {
-            "model": model, "temperature": 0, "max_tokens": 8192,
+            "model": model, "temperature": 0, "max_tokens": budget,
             # Qwen3-family models reason out loud before answering unless told not
             # to: on a 30-type schedule the reasoning alone used up the answer
             # budget and cut the list off. Reading a schedule needs no reasoning.
