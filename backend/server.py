@@ -185,11 +185,26 @@ def ai_ready(cfg: dict) -> bool:
     return bool(cfg.get("ai_base_url"))
 
 
+def normalize_ai_url(url: str) -> str:
+    """Forgive the usual paste slips: trailing slashes, a pasted /models or
+    /chat/completions, and a missing /v1 on a bare vLLM host (RunPod Pod links
+    come without it). Serverless addresses already end in /openai/v1."""
+    from urllib.parse import urlsplit, urlunsplit
+    u = url.strip().rstrip("/")
+    for tail in ("/chat/completions", "/completions", "/models"):
+        if u.endswith(tail):
+            u = u[: -len(tail)].rstrip("/")
+    parts = urlsplit(u)
+    if parts.path in ("", "/"):
+        u = urlunsplit((parts.scheme, parts.netloc, "/v1", "", ""))
+    return u
+
+
 def ai_request(cfg: dict, path: str, body: dict | None = None, timeout: int = AI_TIMEOUT) -> dict:
     """GET/POST JSON to the configured endpoint, e.g. https://<pod>-8000.proxy.runpod.net/v1"""
     import urllib.request
     import urllib.error
-    url = cfg["ai_base_url"].rstrip("/") + path
+    url = normalize_ai_url(cfg["ai_base_url"]) + path
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET",
                                  # RunPod's proxy sits behind Cloudflare, which refuses Python's default
@@ -202,6 +217,10 @@ def ai_request(cfg: dict, path: str, body: dict | None = None, timeout: int = AI
             return json.loads(res.read() or b"{}")
     except urllib.error.HTTPError as e:
         detail = e.read()[:300].decode("utf-8", "replace")
+        if e.code == 404 and "Jupyter" in detail:
+            raise ApiError(502, "That address is the Pod's Jupyter notebook (port 8888). Use the port 8000 link: https://POD-ID-8000.proxy.runpod.net/v1")
+        if e.code == 404 and path == "/models":
+            raise ApiError(502, f"The AI server has nothing at {url}. Check the address ends in /v1 and that vLLM is running on port 8000.")
         raise ApiError(502, f"The AI server answered {e.code}: {detail or e.reason}")
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise ApiError(502, f"Couldn't reach the AI server ({getattr(e, 'reason', e)}). Is the Pod running?")
@@ -639,6 +658,8 @@ class Handler(BaseHTTPRequestHandler):
                     continue   # blank = keep the saved key
                 if k == "ai_base_url" and v and not re.match(r"^https?://", v):
                     raise ApiError(400, "The address must start with https:// (e.g. https://abc123-8000.proxy.runpod.net/v1).")
+                if k == "ai_base_url" and v:
+                    v = normalize_ai_url(v)
                 c.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
             return self.send_json(200, {"ok": True, "configured": ai_ready(get_settings(c))})
         if p == ["settings", "ai", "test"] and m == "POST":
