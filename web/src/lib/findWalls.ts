@@ -395,6 +395,25 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
       const rm = (s.rlo + s.rhi) / 2;
       return { a: toXY(s.th, s.t0, rm), b: toXY(s.th, s.t1, rm), thick: s.rhi - s.rlo, th: s.th, g: s.g, rlo: s.rlo, rhi: s.rhi, t0: s.t0, t1: s.t1 };
     });
+  // a "wall" with words inside it is a note box, a keynote tag or a title strip
+  // drawn with a double border — real walls don't carry text between their faces
+  if (inp.texts && inp.texts.length) {
+    for (let k = raw.length - 1; k >= 0; k--) {
+      const w = raw[k];
+      const c = Math.cos(w.th), sn = Math.sin(w.th);
+      const thick = w.rhi - w.rlo;
+      const boxed = inp.texts.some((sp) => {
+        if (!(sp.str || "").trim()) return false;
+        const mx = (sp.x0 + sp.x1) / 2, my = (sp.y0 + sp.y1) / 2;
+        const t = mx * c + my * sn, r = -mx * sn + my * c;
+        if (t < w.t0 || t > w.t1 || r <= w.rlo || r >= w.rhi) return false;
+        // the run's own extent across the wall: height for a horizontal wall
+        const across = Math.abs(c) > Math.abs(sn) ? sp.y1 - sp.y0 : sp.x1 - sp.x0;
+        return across >= thick * 0.3;
+      });
+      if (boxed) raw.splice(k, 1);
+    }
+  }
   extendEnds(raw);
 
   // ── 5. tags ──

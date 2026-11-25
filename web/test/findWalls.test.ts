@@ -80,6 +80,18 @@ test("layered faces stack into one wall; a chase splits into two", () => {
   assert.deepEqual(chase.map((t) => Math.round(t * 8) / 8), [3.625, 3.625]);
 });
 
+test("a double-bordered note box with text inside is not a wall", () => {
+  const segs: number[] = [], width: number[] = [];
+  const add = (x1: number, y1: number, x2: number, y2: number) => { segs.push(x1, y1, x2, y2); width.push(1.7); };
+  const T = 6 * PPI;
+  add(100, 100, 300, 100); add(100, 100 + T, 300, 100 + T);       // note box
+  add(100, 300, 300, 300); add(100, 300 + T, 300, 300 + T);       // a real wall
+  const texts = [{ str: "PROVIDE NEW", x0: 120, y0: 102, x1: 200, y1: 100 + T - 2 }];
+  const r = findWalls({ segs, width, texts, pxPerFt: PPF });
+  assert.equal(r.walls.length, 1);
+  assert.ok(r.walls[0].a[1] > 290);
+});
+
 test("empty and scaleless input are harmless", () => {
   assert.equal(findWalls({ segs: [], pxPerFt: 18 }).walls.length, 0);
   assert.ok(Array.isArray(findWalls({ segs: [0, 0, 10, 0], pxPerFt: 0 }).walls));
