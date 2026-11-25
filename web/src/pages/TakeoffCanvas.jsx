@@ -3628,7 +3628,7 @@ export default function TakeoffCanvas() {
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
-    if (wallFind && tool === "select" && wallFindHit(p)) return;
+    if (wallFind && tool === "select" && wallFindHit(p, e)) return;
     if (tool === "select") { selectAt(p, e); return; }
     // One-Click proposal handles: a press on a corner/edge grip starts an EDIT drag
     // (select+move a vertex, move a whole edge, or Shift-click to insert a point) —
@@ -4479,6 +4479,7 @@ export default function TakeoffCanvas() {
     if (tool === "select") updateInsGhost(e);
     // One-Click proposal editing: dragging a corner/edge grip, else revealing
     // handles on the region under the cursor. Both work in panel-LOCAL px.
+    if (wfDragRef.current) { wallFindDragMove(e); return; }
     if (ocDragRef.current) { ocDragMove(e); return; }
     if (tool === "oneclick" && proposal && !panRef.current && !pendingClickRef.current) ocHoverUpdate(e);
     if (dragRef.current) {
@@ -4616,6 +4617,7 @@ export default function TakeoffCanvas() {
       try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ }
       return;
     }
+    if (wfDragRef.current) { wfDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ } return; }
     if (ocDragRef.current) { ocDragRef.current = null; bumpIdle(); try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ } return; }
     if (dragRef.current) {
       const d = dragRef.current;
@@ -5102,6 +5104,12 @@ export default function TakeoffCanvas() {
     try { if (left.length) localStorage.setItem("vt_wall_queue", JSON.stringify(left.slice(-50))); else localStorage.removeItem("vt_wall_queue"); } catch { /* storage full */ }
   }
 
+  // review colours for Find walls: one strong, distinct hue per plan tag (not the
+  // assemblies' own colours, which are often several navies and golds alike).
+  // Orange comes last: CAD hatch and the plan's own highlights are often orange.
+  const WALL_REVIEW_COLORS = ["#e6194b", "#1f5cff", "#00a651", "#f032e6", "#00b8d9", "#7b2cbf", "#9acd32", "#008080", "#b8002e", "#000080", "#8a8a00", "#8b4513", "#ff69b4", "#f58231"];
+  const wfDragRef = useRef(null);   // Find walls review: dragging a run's end {id, end, other, dir}
+
   async function runFindWalls() {
     const tp = focusPanel;
     if (!tp || !tp.img.w) { setCommitMsg("Open a sheet first."); return; }
@@ -5133,7 +5141,12 @@ export default function TakeoffCanvas() {
     const byTag = new Map(conditions.filter((c) => c.finish_tag).map((c) => [c.finish_tag.trim().toUpperCase(), c.id]));
     const map = {};
     for (const w of res.walls) { const t = w.tag || "?"; if (!(t in map)) map[t] = t === "?" ? "" : (byTag.get(t) || ""); }
-    setWallFind({ key: tp.key, walls: res.walls, map, off, auto, touched: new Set(), pens: res.pens, checker: { trained: !!wm.model, n: wm.model?.n || 0, decisions: wm.decisions, offline: !!wm.offline, dropped: auto.size, doubtful } });
+    const lfByTag = new Map();
+    for (const w of res.walls) lfByTag.set(w.tag || "?", (lfByTag.get(w.tag || "?") || 0) + w.lengthFt);
+    const colors = {};
+    [...lfByTag.keys()].sort((a, b) => (a === "?") - (b === "?") || lfByTag.get(b) - lfByTag.get(a))
+      .forEach((t, i) => { colors[t] = WALL_REVIEW_COLORS[i % WALL_REVIEW_COLORS.length]; });
+    setWallFind({ key: tp.key, walls: res.walls, map, colors, off, auto, touched: new Set(), pens: res.pens, checker: { trained: !!wm.model, n: wm.model?.n || 0, decisions: wm.decisions, offline: !!wm.offline, dropped: auto.size, doubtful } });
     setCommitMsg(`Found ${res.walls.length} wall runs${auto.size ? ` — the wall checker dropped ${auto.size} likely non-walls` : ""}. Map each tag to an assembly, click a run to drop or restore it, then Add.`);
   }
   const wallFindGroups = (wf) => {
@@ -5147,12 +5160,28 @@ export default function TakeoffCanvas() {
     return [...g.values()].sort((p, q) => (p.tag === "?") - (q.tag === "?") || q.lf - p.lf);
   };
   // a press on a suggested run toggles it in/out of the batch
-  function wallFindHit(p) {
+  function wallFindHit(p, e) {
     if (!wallFind) return false;
     const tp = panelByKey(wallFind.key);
     if (!tp || p[0] < tp.xOffset || p[0] > tp.xOffset + tp.img.w) return false;
     const x = p[0] - tp.xOffset, y = p[1];
     const thr = 6 / tfRef.current.scale;
+    // a press on a run's end handle starts stretching / trimming that run
+    let grab = null, gd = 10 / tfRef.current.scale;
+    for (const w of wallFind.walls) {
+      if (wallFind.off.has(w.id)) continue;
+      for (const end of ["a", "b"]) {
+        const d = Math.hypot(w[end][0] - x, w[end][1] - y);
+        if (d < gd) { gd = d; grab = { w, end }; }
+      }
+    }
+    if (grab && e) {
+      const o = grab.end === "a" ? grab.w.b : grab.w.a, q = grab.w[grab.end];
+      const L = Math.hypot(q[0] - o[0], q[1] - o[1]) || 1;
+      wfDragRef.current = { id: grab.w.id, end: grab.end, other: o.slice(), dir: [(q[0] - o[0]) / L, (q[1] - o[1]) / L] };
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* fine */ }
+      return true;
+    }
     let best = null, bd = Infinity;
     for (const w of wallFind.walls) {
       const dx = w.b[0] - w.a[0], dy = w.b[1] - w.a[1], L2 = dx * dx + dy * dy || 1;
@@ -5163,6 +5192,34 @@ export default function TakeoffCanvas() {
     if (!best) return false;
     setWallFind((wf) => { const off = new Set(wf.off); if (off.has(best.id)) off.delete(best.id); else off.add(best.id); const touched = new Set(wf.touched); touched.add(best.id); return { ...wf, off, touched }; });
     return true;
+  }
+  // Stretch or trim a suggested run: the end slides along the run's own line
+  // (hold ⇧ to move it freely), snapping to the plan's line ends and corners.
+  function wallFindDragMove(e) {
+    const d = wfDragRef.current, wf = wallFind;
+    const tp = wf && panelByKey(wf.key);
+    if (!d || !tp || !tp.img.w) { wfDragRef.current = null; return; }
+    const raw = toImage(e.clientX, e.clientY);
+    let x = raw[0] - tp.xOffset, y = raw[1];
+    const grid = snapGridsRef.current.get(wf.key);
+    const hit = grid ? nearestSnap(grid, x, y, 8 / tfRef.current.scale) : null;
+    if (hit) { x = hit[0]; y = hit[1]; }
+    let np;
+    if (e.shiftKey) np = [x, y];
+    else {
+      const t = Math.max(2, (x - d.other[0]) * d.dir[0] + (y - d.other[1]) * d.dir[1]);   // never flip past the other end
+      np = [d.other[0] + t * d.dir[0], d.other[1] + t * d.dir[1]];
+    }
+    const upp = uppFor(wf.key) || 0;
+    setWallFind((cur) => cur && {
+      ...cur,
+      walls: cur.walls.map((w) => {
+        if (w.id !== d.id) return w;
+        const nw = { ...w, [d.end]: np, edited: true };
+        nw.lengthFt = +((Math.hypot(nw.b[0] - nw.a[0], nw.b[1] - nw.a[1]) * upp) || w.lengthFt).toFixed(2);
+        return nw;
+      }),
+    });
   }
   function commitWallFind() {
     const wf = wallFind;
@@ -10499,13 +10556,19 @@ export default function TakeoffCanvas() {
                         {wallFind.walls.map((w) => {
                           const off = wallFind.off.has(w.id);
                           const cid = wallFind.map[w.tag || "?"];
-                          const col = off ? "#8a8a8a" : cid ? (condById[cid]?.color || "#1f3fc7") : "#d9822b";
+                          // tag colour while it will be added; grey when dropped or its tag is skipped
+                          const col = off || !cid ? "#8a8a8a" : (wallFind.colors?.[w.tag || "?"] || "#1f3fc7");
                           return <line key={"fw" + w.id} x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke={col}
-                            strokeOpacity={off ? 0.35 : w.tagSource === "thickness" || !w.tag ? 0.45 : 0.7}
+                            strokeOpacity={off ? 0.35 : !cid ? 0.4 : w.tagSource === "thickness" || !w.tag ? 0.6 : 0.85}
                             strokeWidth={Math.max(w.thickPx, 3 / tf.scale)} strokeDasharray={off ? `${4 / tf.scale} ${4 / tf.scale}` : (w.score != null && w.score < DOUBT_BELOW ? `${10 / tf.scale} ${3 / tf.scale}` : undefined)}>
                             <title>{`${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${w.score != null ? ` · wall checker ${Math.round(w.score * 100)}%` : ""}${off ? (wallFind.auto?.has(w.id) && !wallFind.touched?.has(w.id) ? " · dropped by the checker (click to restore)" : " · dropped") : ""}`}</title>
                           </line>;
                         })}
+                        {/* end handles: drag to stretch or trim a run (⇧ moves the end freely) */}
+                        {wallFind.walls.filter((w) => !wallFind.off.has(w.id) && wallFind.map[w.tag || "?"]).flatMap((w) => ["a", "b"].map((end) => (
+                          <circle key={`fwh${w.id}${end}`} cx={w[end][0]} cy={w[end][1]} r={3.6 / tf.scale}
+                            fill="#fff" stroke={wallFind.colors?.[w.tag || "?"] || "#1f3fc7"} strokeWidth={1.6 / tf.scale} style={{ cursor: "move" }} />
+                        )))}
                       </g>
                     )}
                     {proposal && proposal.key === p.key && proposal.regions.map((r, i) => {
@@ -11040,7 +11103,7 @@ export default function TakeoffCanvas() {
           return (
             <div data-find-walls-panel style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 300, maxHeight: "60%", overflowY: "auto", padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5 }}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6 }}>Find walls — review</div>
-              <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag. Click a run on the plan to drop or restore it. Faded runs were matched by thickness only — check them.</div>
+              <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag — each tag has its own colour on the plan; skipped tags show grey. Click a run to drop or restore it. Drag a run's white end dot to stretch or trim it (⇧ moves it freely). Paler runs were matched by thickness only — check them.</div>
               <div style={{ fontSize: 11.5, marginBottom: 8, padding: "6px 8px", background: "var(--paper)", border: "1px solid var(--ink-faint)" }}>
                 {wallFind.checker?.trained
                   ? <>Wall checker (learned from {wallFind.checker.n} reviews{wallFind.checker.offline ? ", offline copy" : ""}): dropped <b>{wallFind.checker.dropped}</b> likely non-walls (grey dashes — click to restore); <b>{wallFind.checker.doubtful}</b> doubtful runs are drawn dashed.</>
@@ -11048,6 +11111,8 @@ export default function TakeoffCanvas() {
               </div>
               {groups.map((g) => (
                 <div key={g.tag} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <span aria-hidden title={wallFind.map[g.tag] ? "Colour on the plan" : "Skipped — shown grey on the plan"}
+                    style={{ width: 14, height: 14, flex: "0 0 14px", borderRadius: 3, background: wallFind.map[g.tag] ? (wallFind.colors?.[g.tag] || "#1f3fc7") : "transparent", border: `2px solid ${wallFind.colors?.[g.tag] || "#8a8a8a"}`, opacity: wallFind.map[g.tag] ? 1 : 0.5 }} />
                   <span style={{ minWidth: 54, fontWeight: 700 }}>{g.tag === "?" ? "Untagged" : g.tag}</span>
                   <span style={{ minWidth: 70, color: "var(--ink-secondary)", fontVariantNumeric: "tabular-nums" }}>{g.n} · {fl(g.lf, 0)}</span>
                   <select aria-label={`Assembly for ${g.tag}`} value={wallFind.map[g.tag] || ""} onChange={(e) => { const v = e.target.value; setWallFind((wf) => ({ ...wf, map: { ...wf.map, [g.tag]: v } })); }} style={{ flex: 1, minWidth: 0 }}>
