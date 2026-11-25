@@ -32,6 +32,7 @@ export const icons = {
   count: (s) => <I size={s}><rect x="4" y="4" width="4.5" height="4.5" fill="currentColor" stroke="none" /><rect x="15" y="5.5" width="4.5" height="4.5" fill="currentColor" stroke="none" /><rect x="6.5" y="13.5" width="4.5" height="4.5" fill="currentColor" stroke="none" /><rect x="15" y="15" width="4.5" height="4.5" /></I>,
   deduct: (s) => <I size={s}><path d="M12 4 L 20 10 L 17 19 L 7 19 L 4 10 Z" /><line x1="9" y1="13" x2="15" y2="13" /></I>,
   deductRect: (s) => <I size={s}><rect x="4" y="6" width="16" height="12" /><line x1="9" y1="12" x2="15" y2="12" /></I>,
+  spark: (s) => <I size={s}><path d="M12 3 L13.8 9.2 L20 11 L13.8 12.8 L12 19 L10.2 12.8 L4 11 L10.2 9.2 Z" /><path d="M18.5 3.5 V 6.5 M17 5 H 20" /></I>,
   snap: (s) => <I size={s}><path d="M7 4 V 12 a 5 5 0 0 0 10 0 V 4" /><path d="M7 4 H 10.5 M13.5 4 H 17" /><path d="M7 7.5 H 10.5 M13.5 7.5 H 17" /><circle cx="12" cy="20.6" r="0.9" fill="currentColor" /></I>,
   angle: (s) => <I size={s}><path d="M4 19 H 20" /><path d="M4 19 L 17 6" /><path d="M12 19 a 8 8 0 0 0 -2.3 -5.7" /></I>,
   cloud: (s) => <I size={s}><path d="M6 9 a2.3 2.3 0 0 1 4 -1.4 a2.3 2.3 0 0 1 4 0 a2.3 2.3 0 0 1 4 1.4 a2.3 2.3 0 0 1 0.4 3 a2.3 2.3 0 0 1 -0.4 3 a2.3 2.3 0 0 1 -4 1.4 a2.3 2.3 0 0 1 -4 0 a2.3 2.3 0 0 1 -4 -1.4 a2.3 2.3 0 0 1 -0.4 -3 a2.3 2.3 0 0 1 0.4 -3 Z" /></I>,

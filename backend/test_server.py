@@ -298,7 +298,15 @@ class ServerTest(unittest.TestCase):
             self.assertEqual((s, bad["walls"]), (200, []))
             self.assertIn("not with a list", bad["error"])
             s, log, _ = admin.req("GET", "/api/ai/log")
-            self.assertEqual((log["total"], log["reviewed"]), (2, 1))
+            self.assertEqual((log["total"], log["reviewed"]), (2, 1))  # (before the text read below)
+            # the schedule as text (found in the project's drawings): sent as plain text
+            seen["reply"] = '[{"tag": "P1", "stud_size": "92mm", "stud_oc": 16}]'
+            s, out, _ = admin.req("POST", "/api/ai/read-schedule", {"text": "INTERIOR PARTITION\nP1\n· 16mm GYPSUM WALL BOARD", "source": "A002 p3"})
+            self.assertEqual((s, out["walls"][0]["tag"]), (200, "P1"))
+            sent = seen["body"]["messages"][0]["content"]
+            self.assertIsInstance(sent, str)
+            self.assertIn("16mm GYPSUM WALL BOARD", sent)
+            self.assertIn("from A002 p3", sent)
             # wrong image type refused
             self.assertEqual(admin.req("POST", "/api/ai/read-schedule", {"image": "data:text/plain;base64,aGk="})[0], 400)
         finally:

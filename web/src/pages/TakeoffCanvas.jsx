@@ -71,7 +71,7 @@ import { createPageCache } from "../lib/ocr/pageCache";
 import { createPageReader, pageReadView, readSignature, backgroundRows, createReadRenderGate } from "../lib/ocr/pageRead";
 import { createDocCache, createSheetSource, readHooks, lookupHooks, readdEffects, docIdleMax } from "../lib/ocr/sheetSource";
 import { getOcrClient } from "../lib/ocr/client";
-import { pageTextIndex } from "../lib/pageTextIndex";
+import { pageTextIndex, pageRuns } from "../lib/pageTextIndex";
 import { measurePage } from "../lib/pictures";
 import { normalizeLoadedGroups } from "../lib/sheetGroups";
 import { isStitchKey, mintStitchId, sanitizeStitches, autoButt, stitchExtent, alignMembers, seamClips, mergePoints, mergeSegs, stitchAlive, stitchLayoutSig, pinnedFiles } from "../lib/stitches";
@@ -223,6 +223,9 @@ import { computeShapeMetrics, needsMetrics, recalibrateShapes, linearVerticalFt 
 import { fmtCheckLen, parseLenInput, checkVerdict, M_PER_FT, areaVal, areaUnit, lenVal, lenUnit, calInputToFeet, heightVal, heightUnit, heightInputToFeet, heightStep, dimInputStr, dimLabel, volVal, volUnit } from "../lib/units";
 import * as panelGeom from "../lib/panelGeometry.js";
 import { findWalls } from "../lib/findWalls";
+import { findScheduleOnPage } from "../lib/scheduleFinder";
+import { api as vanguardApi } from "../lib/vanguardApi.js";
+import ScheduleReader from "../components/vanguard/ScheduleReader.jsx";
 
 // Carpet roll width — a run reaching this needs a seam. The live cursor readout
 // turns amber at/past it so the estimator sees where seams fall while tracing.
@@ -368,6 +371,9 @@ export default function TakeoffCanvas() {
   const [sheetGroup, setSheetGroup] = useState([]);   // sheetKeys shown side-by-side; [] = single-sheet mode
   const [sheetLevels, setSheetLevels] = useState({}); // sheetKey → level label ("L1") — persisted (additive `sheet_levels` key); groups the gallery for multi-floor sets
   const [lastGroup, setLastGroup] = useState([]);     // most recent side-by-side composition — "Regroup" restores it
+  const [schedOpen, setSchedOpen] = useState(false);   // AI tools → Read schedule (the project's own wall schedule → project assemblies)
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const schedCacheRef = useRef(new Map());   // sheet key → { label, score, text, heading } — a page is searched once per session
   const [wallFind, setWallFind] = useState(null);       // Find walls review: { key, walls, map: tag → condition id | "", off: Set<wall id> }
   const [focusKey, setFocusKey] = useState("");         // panel of the last click — scale/calibrate target in group mode
   // Stitches (#161): persisted match-line composites (lib/stitches.ts) — a
@@ -4965,6 +4971,57 @@ export default function TakeoffCanvas() {
     };
     dispatchShape({ type: "add", shapes: [{ ...draft, computed: computeShapeMetrics(draft, tp.img, upp, aCond) }] });
   }
+  // ── AI tools → Read schedule ─────────────────────────────────────────────
+  // Search every sheet of every plan file in this project for the partition /
+  // wall-type schedule (lib/scheduleFinder reads each page's text layer), best
+  // first. The dialog sends the winner's text to the AI; what comes back is
+  // added to THIS project's assemblies, never the company library.
+  const findScheduleImplRef = useRef(null);
+  findScheduleImplRef.current = async (progress) => {
+    const files = sheets.map((sh) => sh.name);
+    const out = [];
+    let done = 0, total = 0;
+    const counts = [];
+    for (const f of files) { try { const pdf = await docFor(f); counts.push([f, pdf.numPages || 1]); total += pdf.numPages || 1; } catch { /* unreadable file */ } }
+    for (const [f, n] of counts) {
+      const pdf = await docFor(f);
+      for (let pg = 1; pg <= n; pg++) {
+        const key = pg > 1 ? `${f}#${pg}` : f;
+        progress(`sheet ${++done} of ${total}`);
+        let hit = schedCacheRef.current.get(key);
+        if (!hit) {
+          try {
+            const page = await pdf.getPage(pg);
+            const vp = page.getViewport({ scale: 1 });
+            const tc = await page.getTextContent();
+            const r = findScheduleOnPage(pageRuns(tc, vp));
+            hit = { key, score: r.score, text: r.text, heading: r.heading, label: `${extractSheetNumber(tc, vp) || labelsForFile(labelsByFile, f)[pg] || `Page ${pg}`}${counts.length > 1 ? ` · ${f}` : ""}` };
+          } catch { hit = { key, score: 0, text: "", heading: null, label: key }; }
+          schedCacheRef.current.set(key, hit);
+        }
+        if (hit.score > 0) out.push(hit);
+      }
+    }
+    return out.sort((a, b) => b.score - a.score).slice(0, 6);
+  };
+  const findProjectSchedule = useCallback((progress) => findScheduleImplRef.current(progress), []);
+  useEffect(() => { vanguardApi("GET", "/api/status").then((st) => setAiEnabled(!!st?.ai_enabled), () => setAiEnabled(false)); }, []);
+  function openReadSchedule() {
+    if (!aiEnabled) { setCommitMsg("Connect your AI first — an admin can add it under Team → AI settings."); return; }
+    setSchedOpen(true);
+  }
+  function addScheduleAssemblies(list) {
+    const have = new Set(conditions.map((c) => String(c.finish_tag || "").trim().toUpperCase()));
+    const kept = list.filter((t) => !have.has(String(t.finish_tag || "").trim().toUpperCase()));
+    const skipped = list.length - kept.length;
+    const made = kept.map((t) => instantiateTemplate(t));
+    setSchedOpen(false);
+    if (!made.length) { setCommitMsg(skipped ? "Those wall types are already in this project — nothing added." : "Nothing to add."); return; }
+    setConditions((cs) => [...cs, ...made]);
+    activateCondition(made[0].id, { reassign: false });
+    setCommitMsg(`Added ${made.length} assembl${made.length === 1 ? "y" : "ies"} to this project from the schedule${skipped ? ` (${skipped} already here, kept as they were)` : ""}. Find walls will match them to the plan's tags.`);
+  }
+
   // ── Find walls (vector line reader) ──────────────────────────────────────
   // Reads the sheet's own wall linework (lib/findWalls): parallel face pairs at
   // wall spacing, split at openings and intersections, tagged from the plan's
@@ -8963,7 +9020,7 @@ export default function TakeoffCanvas() {
           <button type="button" onClick={addCondition} title="Add assembly" aria-label="Add assembly"><Icon name="plus" size={14} /></button>
           <button type="button" onClick={() => setWorkspaceDetailsOpen((v) => !v)} aria-expanded={workspaceDetailsOpen} disabled={!aCond}>Properties</button></>}
         history={<><button type="button" onClick={() => poly.length ? dropLastPoint() : undoShapeCommand()} title="Undo (⌘Z)" aria-label="Undo"><Icon name="undo" size={16} /></button><button type="button" onClick={redoShapeCommand} title="Redo (⇧⌘Z)" aria-label="Redo"><span style={{ display: "flex", transform: "scaleX(-1)" }}><Icon name="undo" size={16} /></span></button></>}
-        aids={<>{!simple && <button type="button" aria-pressed={tool === "zone"} onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))} title="Zone check — trace a region (an apartment, a wing) to read every assembly's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."><Icon name="zone" size={15} />Zone</button>}<button type="button" aria-pressed={snapOn} onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"><Icon name="snap" size={15} />Snap</button><button type="button" aria-pressed={!!wallFind} onClick={() => (wallFind ? setWallFind(null) : runFindWalls())} title="Find walls — read the wall runs from this sheet's CAD lines and suggest wall takeoffs by tag"><Icon name="surface" size={15} />Find walls</button><button type="button" aria-pressed={angleOn} onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides"><Icon name="angle" size={15} />45°</button>{!simple && <>{draftMenu}<span className="calm-separator" />{annotations.control}</>}</>}
+        aids={<>{!simple && <button type="button" aria-pressed={tool === "zone"} onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))} title="Zone check — trace a region (an apartment, a wing) to read every assembly's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."><Icon name="zone" size={15} />Zone</button>}<button type="button" aria-pressed={snapOn} onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"><Icon name="snap" size={15} />Snap</button><span className="calm-separator" /><button type="button" aria-pressed={schedOpen} onClick={openReadSchedule} title="AI tools · Read schedule — find the wall schedule in this project's drawings and turn it into this project's assemblies"><Icon name="spark" size={15} />Read schedule</button><button type="button" aria-pressed={!!wallFind} onClick={() => (wallFind ? setWallFind(null) : runFindWalls())} title="Find walls — read the wall runs from this sheet's CAD lines and suggest wall takeoffs by tag"><Icon name="surface" size={15} />Find walls</button><button type="button" aria-pressed={angleOn} onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides"><Icon name="angle" size={15} />45°</button>{!simple && <>{draftMenu}<span className="calm-separator" />{annotations.control}</>}</>}
         action={finishOk && <button type="button" onClick={finishShape}>Finish ({poly.length})</button>}
         scaleMenu={<><button type="button" onClick={() => setUnits((u) => u === "metric" ? "imperial" : "metric")} title="Switch display units">{units === "metric" ? "m" : "ft"}</button><ToolMenu title={scaleTitle} onOpenChange={onScaleMenuDepth} face={<span data-tour="scale">{scaleFace}</span>} faceStyle={{ fontFamily: "var(--f-mono)", fontSize: 11.5, ...scaleFaceStyle }} menuStyle={{ minWidth: 250 }} items={scaleItems} /></>}
       />}
@@ -9046,6 +9103,11 @@ export default function TakeoffCanvas() {
           <button onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${snapOn ? "var(--c-positive)" : "var(--ink-faint)"}`, background: snapOn ? "var(--c-positive)" : "transparent", color: snapOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
             <Icon name="snap" size={15} />Snap
+          </button>
+          <span style={{ fontSize: 10.5, letterSpacing: 0.6, textTransform: "uppercase", opacity: 0.55, alignSelf: "center", marginLeft: 6 }}>AI tools</span>
+          <button onClick={openReadSchedule} title="Read schedule — find the wall schedule in this project's drawings and turn it into this project's assemblies"
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${schedOpen ? "var(--cobalt)" : "var(--ink-faint)"}`, background: schedOpen ? "var(--cobalt)" : "transparent", color: schedOpen ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
+            <Icon name="spark" size={15} />Read schedule
           </button>
           <button onClick={() => (wallFind ? setWallFind(null) : runFindWalls())} title="Find walls — read the wall runs from this sheet's CAD lines and suggest wall takeoffs by tag"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${wallFind ? "var(--cobalt)" : "var(--ink-faint)"}`, background: wallFind ? "var(--cobalt)" : "transparent", color: wallFind ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
@@ -9404,6 +9466,8 @@ export default function TakeoffCanvas() {
            {simpleTile("linear", "linear", "Line", "Line — trims, bead, backing; double-click or Enter to finish", "L")}
            {simpleTile("count", "count", "Count", "Count — click each item (frames, access panels)", "C")}
            {simpleTile("symbol", "symbol", "Auto count", "Auto count — box one symbol, the app counts every match", "Y")}
+           <span className="vg-rail-group">AI tools</span>
+           {simpleTile("readschedule", "spark", "Read schedule", "Read schedule — finds the wall schedule in this project's drawings; the AI turns it into this project's assemblies", null, () => openReadSchedule(), { armed: schedOpen })}
            {simpleTile("findwalls", "surface", "Find walls", "Find walls — read the wall runs from this sheet's CAD lines and suggest wall takeoffs by tag", null, () => { setTool("select"); if (wallFind) setWallFind(null); else runFindWalls(); }, { armed: !!wallFind })}
            <span className="vg-rail-group">Adjust</span>
            {simpleTile("deduct", "deduct", "Cut out", "Cut out — remove an opening from an area", "D", null, { tint: "var(--c-danger)" })}
@@ -10845,6 +10909,7 @@ export default function TakeoffCanvas() {
         {/* live readout — top-right, at right:56 so it clears the panel rail's
             column entirely (right:14, 34px wide — same clearance the zone panel
             uses) instead of the old magic maxHeight tuned to the rail's height. */}
+        {schedOpen && <ScheduleReader findSchedule={findProjectSchedule} onClose={() => setSchedOpen(false)} onAdd={addScheduleAssemblies} />}
         {wallFind && (() => {
           const groups = wallFindGroups(wallFind);
           const opts = [...conditions].sort((a, b) => (b.measure === "wall") - (a.measure === "wall") || String(a.finish_tag).localeCompare(String(b.finish_tag)));

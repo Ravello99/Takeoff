@@ -62,6 +62,11 @@ List EVERY wall type shown. Return ONLY a JSON array, no prose, no markdown. Eac
  "furring": true or false,
  "notes": "anything else important"}
 Use null or "" when the schedule doesn't say. Do not invent wall types."""
+SCHEDULE_TEXT_NOTE = """
+The schedule below was extracted from the drawing's text layer: the table layout is gone, so each
+wall type usually appears as its title line, its mark on its own line, then its layers as bullet lines.
+Metric sizes are fine (e.g. 92mm studs at 400mm o.c. -> stud_size "92mm", stud_oc 16; 600mm o.c. -> 24).
+Include exterior wall types too; skip roof, floor and ceiling assemblies."""
 EMAIL_KEYS = ("smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from", "public_url")
 INVITE_DAYS = 7
 MAX_JSON = 64 * 1024 * 1024        # takeoff payload / library JSON
@@ -836,12 +841,20 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, "AI isn't connected yet. An admin can add it on the Team page.")
         body = self.read_json()
         img = str(body.get("image") or "")
-        m_ = re.match(r"^data:(image/(?:png|jpeg|webp));base64,(.+)$", img, re.S)
-        if not m_:
-            raise ApiError(400, "Send a PNG or JPEG image.")
-        raw_bytes = base64.b64decode(m_.group(2))
-        if len(raw_bytes) > 25 * 1024 * 1024:
-            raise ApiError(413, "That image is too large (25 MB max).")
+        sched_text = str(body.get("text") or "").strip()
+        source = str(body.get("source") or "").strip()[:200]   # e.g. "A002 · bay.pdf p3"
+        if sched_text:
+            # the schedule as read from the drawing's own text layer (Takeoff
+            # finds it in the project) — works with text-only models
+            sched_text = sched_text[:20000]
+            raw_bytes = sched_text.encode("utf-8")
+        else:
+            m_ = re.match(r"^data:(image/(?:png|jpeg|webp));base64,(.+)$", img, re.S)
+            if not m_:
+                raise ApiError(400, "Send the schedule text or a PNG/JPEG image.")
+            raw_bytes = base64.b64decode(m_.group(2))
+            if len(raw_bytes) > 25 * 1024 * 1024:
+                raise ApiError(413, "That image is too large (25 MB max).")
         digest = hashlib.sha256(raw_bytes).hexdigest()
         dest = self.app.blob_path(digest)
         if not dest.exists():
@@ -852,7 +865,10 @@ class Handler(BaseHTTPRequestHandler):
         t0 = time.time()
         out = ai_request(cfg, "/chat/completions", {
             "model": model, "temperature": 0, "max_tokens": 4096,
-            "messages": [{"role": "user", "content": [
+            "messages": [{"role": "user", "content": (
+                SCHEDULE_PROMPT + SCHEDULE_TEXT_NOTE + (f"\nExtra note from the estimator: {hint}" if hint else "")
+                + f"\n\nSCHEDULE TEXT{f' (from {source})' if source else ''}:\n{sched_text}"
+            ) if sched_text else [
                 {"type": "image_url", "image_url": {"url": img}},
                 {"type": "text", "text": SCHEDULE_PROMPT + (f"\nExtra note from the estimator: {hint}" if hint else "")}]}],
         })

@@ -1,7 +1,10 @@
-// Vanguard — "Read schedule with AI": paste or upload a picture of a
-// partition schedule, the AI lists the wall types, the estimator checks and
-// fixes them in a table, and they become assemblies. The corrected rows go
-// back to the server with the AI's original answer — training data.
+// Vanguard — "Read schedule" (AI tools, inside a takeoff project): Takeoff
+// finds the partition / wall-type schedule in the project's own drawings
+// (lib/scheduleFinder), the AI reads it, the estimator checks and fixes the
+// wall types in a table, and they become THIS project's assemblies. A
+// screenshot still works for scans or a schedule the search missed. The
+// corrected rows go back to the server with the AI's original answer —
+// training data.
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../lib/vanguardApi.js";
 import { normalizeWall, baseFor, wallToAssembly } from "../../lib/aiSchedule.js";
@@ -24,8 +27,13 @@ async function fileToDataUrl(file) {
 
 const BASE_LABEL = { W1: "Standard", W2: "Acoustic", W3: "To deck", W4: "Acoustic to deck", W5: "2-layer rated", SW1: "Shaft wall", F1: "Furring / 1 side" };
 
-export default function ScheduleReader({ onAdd, onClose }) {
+export default function ScheduleReader({ onAdd, onClose, findSchedule, addLabel = "to this project" }) {
   const [image, setImage] = useState(null);
+  // project search: { status: "searching"|"done", progress, candidates: [{ key, label, score, text }], pick }
+  const [search, setSearch] = useState(findSchedule ? { status: "searching", progress: "", candidates: [], pick: 0 } : null);
+  const [showText, setShowText] = useState(false);
+  const useImage = !search || search.status === "image";
+  const found = search && search.status === "done" ? search.candidates[search.pick] : null;
   const [hint, setHint] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -36,6 +44,7 @@ export default function ScheduleReader({ onAdd, onClose }) {
   const take = async (file) => {
     if (!file || !file.type.startsWith("image/")) { setError("That isn't an image. Take a screenshot of the schedule (Windows: Win+Shift+S) and paste it here."); return; }
     setError(""); setResult(null);
+    setSearch((x) => (x ? { ...x, status: "image" } : x));   // a pasted screenshot wins over the found schedule
     setImage(await fileToDataUrl(file));
   };
   useEffect(() => {
@@ -49,11 +58,20 @@ export default function ScheduleReader({ onAdd, onClose }) {
     return () => { window.removeEventListener("paste", onPaste); window.removeEventListener("keydown", onKey); };
   }, [busy, onClose]);
 
+  useEffect(() => {
+    if (!findSchedule) return;
+    let live = true;
+    findSchedule((progress) => { if (live) setSearch((x) => (x ? { ...x, progress } : x)); })
+      .then((candidates) => { if (live) setSearch({ status: candidates.length ? "done" : "image", progress: "", candidates, pick: 0, missed: !candidates.length }); })
+      .catch((e) => { if (live) { setSearch({ status: "image", progress: "", candidates: [], pick: 0, missed: true }); setError(String(e?.message || e)); } });
+    return () => { live = false; };
+  }, [findSchedule]);
+
   const read = async () => {
     setBusy(true); setError(""); setElapsed(0);
     timer.current = setInterval(() => setElapsed((s) => s + 1), 1000);
     try {
-      const r = await api("POST", "/api/ai/read-schedule", { json: { image, hint } });
+      const r = await api("POST", "/api/ai/read-schedule", { json: found && !useImage ? { text: found.text, source: found.label, hint } : { image, hint } });
       if (r.error && !r.walls.length) setError(r.error);
       setResult({ ...r, rows: r.walls.map((w) => ({ ...normalizeWall(w), include: true })) });
     } catch (e) { setError(e.message); } finally { clearInterval(timer.current); setBusy(false); }
@@ -70,8 +88,32 @@ export default function ScheduleReader({ onAdd, onClose }) {
   return (
     <div className="vp-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
       <div className="vp-dialog vs-dialog" role="dialog" aria-label="Read a wall schedule with AI">
-        <header><h2>Read a wall schedule with AI</h2><button className="vp-x" onClick={onClose} disabled={busy} aria-label="Close">×</button></header>
-        {!result && (<>
+        <header><h2>Read the wall schedule</h2><button className="vp-x" onClick={onClose} disabled={busy} aria-label="Close">×</button></header>
+        {!result && search && search.status === "searching" && (
+          <p className="vp-small">Looking for the partition schedule in this project's drawings… <span className="vp-muted">{search.progress}</span></p>
+        )}
+        {!result && found && !useImage && (<>
+          <p className="vp-small">Found the wall schedule on <strong>{found.label}</strong>{found.heading ? <> — <span className="vp-muted">{found.heading}</span></> : null}.</p>
+          {search.candidates.length > 1 && (
+            <label className="va-f"><span>Wrong sheet? Pick another</span>
+              <select value={search.pick} onChange={(e) => setSearch({ ...search, pick: Number(e.target.value) })}>
+                {search.candidates.map((c, i) => <option key={c.key} value={i}>{c.label}{c.heading ? ` — ${c.heading}` : ""}</option>)}
+              </select></label>
+          )}
+          <button type="button" className="vp-btn vp-ghost vp-small" onClick={() => setShowText((v) => !v)}>{showText ? "Hide" : "Show"} what the AI will read</button>
+          {showText && <pre className="vs-text" style={{ maxHeight: 220, overflow: "auto", fontSize: 11, whiteSpace: "pre-wrap", background: "var(--paper)", padding: 8, border: "1px solid var(--ink-faint)" }}>{found.text}</pre>}
+          <label className="va-f"><span>Anything the AI should know? (optional)</span>
+            <input value={hint} onChange={(e) => setHint(e.target.value)} placeholder="e.g. all partitions go to deck unless noted" /></label>
+          {error && <p className="vp-error">{error}</p>}
+          <div className="vp-row">
+            <button className="vp-btn vp-ghost" onClick={() => setSearch({ ...search, status: "image" })} disabled={busy}>Use a screenshot instead</button>
+            <button className="vp-btn vp-primary" onClick={read} disabled={busy}>
+              {busy ? `Reading… ${elapsed}s${elapsed > 15 ? " (the first read after a quiet spell loads the model)" : ""}` : "Read schedule"}
+            </button>
+          </div>
+        </>)}
+        {!result && useImage && (<>
+          {search?.missed && <p className="vp-small">Couldn't find a partition schedule in this project's text (the drawings may be scanned). Screenshot it instead.</p>}
           <p className="vp-small vp-muted">Screenshot just the <strong>partition schedule / wall types</strong> from the drawings (Windows: <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>, Mac: <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>4</kbd>) and press <kbd>Ctrl</kbd>+<kbd>V</kbd> here, or choose an image file.</p>
           <label className={`vs-drop${image ? " has-image" : ""}`}
             onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); take(e.dataTransfer.files?.[0]); }}>
@@ -82,7 +124,9 @@ export default function ScheduleReader({ onAdd, onClose }) {
             <input value={hint} onChange={(e) => setHint(e.target.value)} placeholder="e.g. all partitions go to deck unless noted" /></label>
           {error && <p className="vp-error">{error}</p>}
           <div className="vp-row">
-            <button className="vp-btn vp-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+            {search && search.candidates.length > 0
+              ? <button className="vp-btn vp-ghost" onClick={() => setSearch({ ...search, status: "done" })} disabled={busy}>Back to the found schedule</button>
+              : <button className="vp-btn vp-ghost" onClick={onClose} disabled={busy}>Cancel</button>}
             <button className="vp-btn vp-primary" onClick={read} disabled={!image || busy}>
               {busy ? `Reading… ${elapsed}s${elapsed > 15 ? " (the first read after a quiet spell loads the model)" : ""}` : "Read schedule"}
             </button>
@@ -112,8 +156,8 @@ export default function ScheduleReader({ onAdd, onClose }) {
             </tbody>
           </table></div>
           <div className="vp-row">
-            <button className="vp-btn vp-ghost" onClick={() => setResult(null)}>Try another image</button>
-            <button className="vp-btn vp-primary" onClick={add} disabled={!chosen.length}>Add {chosen.length} assembl{chosen.length === 1 ? "y" : "ies"}</button>
+            <button className="vp-btn vp-ghost" onClick={() => setResult(null)}>Back</button>
+            <button className="vp-btn vp-primary" onClick={add} disabled={!chosen.length}>Add {chosen.length} assembl{chosen.length === 1 ? "y" : "ies"} {addLabel}</button>
           </div>
         </>)}
       </div>
