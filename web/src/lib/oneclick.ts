@@ -88,7 +88,7 @@ export interface TextMark { x: number; y: number; w: number; h: number }
  *  keeps hand-built geometry (rastermask, tests) and stitched composites
  *  working unchanged. */
 export interface InkContext { subpaths?: SubPath[] | null; texts?: TextMark[] | null; dimTexts?: DimTextMark[] | null }
-export interface VectorGeometry { points: Point[]; segs: number[]; meta: Uint8Array; imageArea: number; lum?: Uint8Array; layerOf?: Int32Array; layerIds?: string[]; subpaths?: SubPath[]; }
+export interface VectorGeometry { points: Point[]; segs: number[]; meta: Uint8Array; imageArea: number; lum?: Uint8Array; width?: Float32Array; layerOf?: Int32Array; layerIds?: string[]; subpaths?: SubPath[]; }
 export interface MaskObj { mask: Uint8Array; mw: number; mh: number; ws: number; softCount: number; mppf?: number; }  // mppf: mask px per foot (0/absent = scale unknown)
 export interface RegionResult { region: Uint8Array; mw: number; mh: number; ws: number; count?: number; }
 export type FloodResult =
@@ -405,6 +405,7 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
   const segs: number[] = [];
   const metaArr: number[] = [];
   const lumArr: number[] = [];
+  const widthArr: number[] = [];   // exact device stroke width per segment (Find walls tells pens apart by it)
   const subpaths: SubPath[] = [];
   // the subpath under construction: opened by moveTo/rectangle, sealed when
   // the next one opens or the op stream ends. A figure that contributed no
@@ -571,9 +572,10 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
       let c = 0, cur: Point | null = null, start: Point | null = null;
       const pathLayer = curLayer;   // one path = one marked-content scope (#85)
       const pathLum = lum;          // stroke color cannot change mid-path (#260)
+      const pathW = (lw || 0) * Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
       pathFill = fillLum;           // …and neither can the fill colour
       const visit = (p: Point) => { points.push(p); };
-      const lineTo = (p: Point) => { if (cur) { segs.push(cur[0], cur[1], p[0], p[1]); metaArr.push(flags); lumArr.push(pathLum); layerOfArr.push(pathLayer); noteSeg(cur, p); } cur = p; visit(p); };
+      const lineTo = (p: Point) => { if (cur) { segs.push(cur[0], cur[1], p[0], p[1]); metaArr.push(flags); lumArr.push(pathLum); widthArr.push(pathW); layerOfArr.push(pathLayer); noteSeg(cur, p); } cur = p; visit(p); };
       for (let oi = 0; oi < ops.length; oi++) {
         const op = ops[oi];
         if (op === OPS.moveTo) { cur = tx(co[c], co[c + 1]); start = cur; openSub(flags, cur); visit(cur); c += 2; }
@@ -592,17 +594,17 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
               u * u * u * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t * t * t * p3[0],
               u * u * u * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t * t * t * p3[1],
             ];
-            if (cur) { segs.push(cur[0], cur[1], q[0], q[1]); metaArr.push(flags | SEG_CURVE); lumArr.push(pathLum); layerOfArr.push(pathLayer); noteSeg(cur, q); }
+            if (cur) { segs.push(cur[0], cur[1], q[0], q[1]); metaArr.push(flags | SEG_CURVE); lumArr.push(pathLum); widthArr.push(pathW); layerOfArr.push(pathLayer); noteSeg(cur, q); }
             cur = q;
           }
           visit(p3);
         }
-        else if (op === OPS.closePath) { if (cur && start) { segs.push(cur[0], cur[1], start[0], start[1]); metaArr.push(flags); lumArr.push(pathLum); layerOfArr.push(pathLayer); noteSeg(cur, start); closeSub(); cur = start; } }
+        else if (op === OPS.closePath) { if (cur && start) { segs.push(cur[0], cur[1], start[0], start[1]); metaArr.push(flags); lumArr.push(pathLum); widthArr.push(pathW); layerOfArr.push(pathLayer); noteSeg(cur, start); closeSub(); cur = start; } }
         else if (op === OPS.rectangle) {
           const x = co[c], y = co[c + 1], w = co[c + 2], h = co[c + 3]; c += 4;
           const q: Point[] = [tx(x, y), tx(x + w, y), tx(x + w, y + h), tx(x, y + h)];
           openSub(flags, q[0]);                       // a rect is its own figure
-          for (let k = 0; k < 4; k++) { const a = q[k], b = q[(k + 1) % 4]; segs.push(a[0], a[1], b[0], b[1]); metaArr.push(flags); lumArr.push(pathLum); layerOfArr.push(pathLayer); noteSeg(a, b); visit(a); }
+          for (let k = 0; k < 4; k++) { const a = q[k], b = q[(k + 1) % 4]; segs.push(a[0], a[1], b[0], b[1]); metaArr.push(flags); lumArr.push(pathLum); widthArr.push(pathW); layerOfArr.push(pathLayer); noteSeg(a, b); visit(a); }
           closeSub();
           cur = q[0]; start = q[0];
         }
@@ -612,7 +614,7 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
   sealSub();
   const meta = Uint8Array.from(metaArr);
   markPolylineArcs(segs, meta);
-  return { points, segs, meta, imageArea, lum: Uint8Array.from(lumArr), layerOf: Int32Array.from(layerOfArr), layerIds, subpaths };
+  return { points, segs, meta, imageArea, lum: Uint8Array.from(lumArr), width: Float32Array.from(widthArr), layerOf: Int32Array.from(layerOfArr), layerIds, subpaths };
 }
 
 // ── 1b. polyline arc detection ─────────────────────────────────────────────

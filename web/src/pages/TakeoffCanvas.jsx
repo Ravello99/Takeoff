@@ -222,6 +222,7 @@ import { oneClickEnabled, ONE_CLICK_GATE_MESSAGE, commandBoxEnabled, ocrEnabled 
 import { computeShapeMetrics, needsMetrics, recalibrateShapes, linearVerticalFt } from "../lib/shapeMetrics.js";
 import { fmtCheckLen, parseLenInput, checkVerdict, M_PER_FT, areaVal, areaUnit, lenVal, lenUnit, calInputToFeet, heightVal, heightUnit, heightInputToFeet, heightStep, dimInputStr, dimLabel, volVal, volUnit } from "../lib/units";
 import * as panelGeom from "../lib/panelGeometry.js";
+import { findWalls } from "../lib/findWalls";
 
 // Carpet roll width — a run reaching this needs a seam. The live cursor readout
 // turns amber at/past it so the estimator sees where seams fall while tracing.
@@ -367,6 +368,7 @@ export default function TakeoffCanvas() {
   const [sheetGroup, setSheetGroup] = useState([]);   // sheetKeys shown side-by-side; [] = single-sheet mode
   const [sheetLevels, setSheetLevels] = useState({}); // sheetKey → level label ("L1") — persisted (additive `sheet_levels` key); groups the gallery for multi-floor sets
   const [lastGroup, setLastGroup] = useState([]);     // most recent side-by-side composition — "Regroup" restores it
+  const [wallFind, setWallFind] = useState(null);       // Find walls review: { key, walls, map: tag → condition id | "", off: Set<wall id> }
   const [focusKey, setFocusKey] = useState("");         // panel of the last click — scale/calibrate target in group mode
   // Stitches (#161): persisted match-line composites (lib/stitches.ts) — a
   // stitch opens as ONE panel; its members are a render-time concern only.
@@ -1001,6 +1003,7 @@ export default function TakeoffCanvas() {
   // exactly today's behaviour (the optional-field contract).
   const subpathsRef = useRef(new Map());
   const textMarksRef = useRef(new Map());  // sheetKey → positioned text (label-box classification)
+  const segWidthRef = useRef(new Map());   // sheetKey → exact stroke width per segment — Find walls tells the wall pen apart by it
   const segLumRef = useRef(new Map());     // sheetKey → per-segment stroke luminance (#260) — the Symbol tool's label leader-chase pen separator
   const textSpansRef = useRef(new Map());  // sheetKey → label text spans (built lazily on first sweep)
   const textTfRef = useRef(new Map());     // sheetKey → viewport transform, for positioning text spans in image px
@@ -2496,7 +2499,8 @@ export default function TakeoffCanvas() {
         const textContent = m.pageObj.getTextContent();
         opList.then(async (ol) => {
           if (stale()) return;
-          const { points, segs, meta, imageArea, lum, layerOf, layerIds, subpaths } = extractVectorGeometry(ol, m.viewport.transform, pdfjsLib.OPS);
+          const { points, segs, meta, imageArea, lum, width, layerOf, layerIds, subpaths } = extractVectorGeometry(ol, m.viewport.transform, pdfjsLib.OPS);
+          if (width) segWidthRef.current.set(m.key, width);
           snapGridsRef.current.set(m.key, buildSnapGrid(points, SNAP_CELL));
           vectorSegsRef.current.set(m.key, segs);
           segMetaRef.current.set(m.key, meta);
@@ -3480,7 +3484,7 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { clearPoly(); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); setSymbolAnchor(null); setImageAnchor(null); setTextAnchor(null); setCopyReceipt(receiptAfterEsc); copyGateRef.current.begin(); setPlacingImageId(null); placeGrabRef.current = null; placeCrossSheetRef.current = null; setAlignPt(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      } else if (e.key === "Escape") { if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { setWallFind(null); clearPoly(); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); setSymbolAnchor(null); setImageAnchor(null); setTextAnchor(null); setCopyReceipt(receiptAfterEsc); copyGateRef.current.begin(); setPlacingImageId(null); placeGrabRef.current = null; placeCrossSheetRef.current = null; setAlignPt(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -3611,6 +3615,7 @@ export default function TakeoffCanvas() {
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
+    if (wallFind && tool === "select" && wallFindHit(p)) return;
     if (tool === "select") { selectAt(p, e); return; }
     // One-Click proposal handles: a press on a corner/edge grip starts an EDIT drag
     // (select+move a vertex, move a whole edge, or Shift-click to insert a point) —
@@ -4960,6 +4965,90 @@ export default function TakeoffCanvas() {
     };
     dispatchShape({ type: "add", shapes: [{ ...draft, computed: computeShapeMetrics(draft, tp.img, upp, aCond) }] });
   }
+  // ── Find walls (vector line reader) ──────────────────────────────────────
+  // Reads the sheet's own wall linework (lib/findWalls): parallel face pairs at
+  // wall spacing, split at openings and intersections, tagged from the plan's
+  // wall tags. Nothing is created until the estimator reviews: each tag maps to
+  // an assembly, a click drops a wrong run, and Add creates surface_area takeoffs.
+  async function runFindWalls() {
+    const tp = focusPanel;
+    if (!tp || !tp.img.w) { setCommitMsg("Open a sheet first."); return; }
+    const upp = uppFor(tp.key);
+    if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first — Find walls measures wall thickness in real units.`); return; }
+    const segs = vectorSegsRef.current.get(tp.key);
+    if (!segs || segs.length < 400) { setCommitMsg("This sheet has no vector linework (likely a scan) — Find walls reads CAD lines."); return; }
+    setCommitMsg("Finding walls…");
+    await new Promise((r) => setTimeout(r, 30));
+    const texts = await ensureTextSpans(tp.key);
+    const tags = conditions.map((c) => c.finish_tag).filter(Boolean);
+    let res;
+    try {
+      res = findWalls({ segs, meta: segMetaRef.current.get(tp.key), width: segWidthRef.current.get(tp.key), lum: segLumRef.current.get(tp.key), texts, pxPerFt: 1 / upp, tags });
+    } catch (err) { setCommitMsg("Find walls failed on this sheet: " + (err?.message || err)); return; }
+    if (!res.walls.length) { setCommitMsg("No walls found — this sheet may draw walls as single lines or fills."); return; }
+    const byTag = new Map(conditions.filter((c) => c.finish_tag).map((c) => [c.finish_tag.trim().toUpperCase(), c.id]));
+    const map = {};
+    for (const w of res.walls) { const t = w.tag || "?"; if (!(t in map)) map[t] = t === "?" ? "" : (byTag.get(t) || ""); }
+    setWallFind({ key: tp.key, walls: res.walls, map, off: new Set(), pens: res.pens });
+    setCommitMsg(`Found ${res.walls.length} wall runs. Map each tag to an assembly, click a run to drop it, then Add.`);
+  }
+  const wallFindGroups = (wf) => {
+    const g = new Map();
+    for (const w of wf.walls) {
+      const t = w.tag || "?";
+      let a = g.get(t); if (!a) g.set(t, (a = { tag: t, n: 0, lf: 0, thick: [] }));
+      if (wf.off.has(w.id)) continue;
+      a.n++; a.lf += w.lengthFt; a.thick.push(w.thickIn);
+    }
+    return [...g.values()].sort((p, q) => (p.tag === "?") - (q.tag === "?") || q.lf - p.lf);
+  };
+  // a press on a suggested run toggles it in/out of the batch
+  function wallFindHit(p) {
+    if (!wallFind) return false;
+    const tp = panelByKey(wallFind.key);
+    if (!tp || p[0] < tp.xOffset || p[0] > tp.xOffset + tp.img.w) return false;
+    const x = p[0] - tp.xOffset, y = p[1];
+    const thr = 6 / tfRef.current.scale;
+    let best = null, bd = Infinity;
+    for (const w of wallFind.walls) {
+      const dx = w.b[0] - w.a[0], dy = w.b[1] - w.a[1], L2 = dx * dx + dy * dy || 1;
+      const u = Math.max(0, Math.min(1, ((x - w.a[0]) * dx + (y - w.a[1]) * dy) / L2));
+      const d = Math.hypot(x - w.a[0] - u * dx, y - w.a[1] - u * dy) - w.thickPx / 2;
+      if (d < thr && d < bd) { bd = d; best = w; }
+    }
+    if (!best) return false;
+    setWallFind((wf) => { const off = new Set(wf.off); if (off.has(best.id)) off.delete(best.id); else off.add(best.id); return { ...wf, off }; });
+    return true;
+  }
+  function commitWallFind() {
+    const wf = wallFind;
+    if (!wf) return;
+    const tp = panelByKey(wf.key);
+    const upp = uppFor(wf.key);
+    if (!tp || !tp.img.w || !upp) { setCommitMsg("Open the sheet with its scale set before adding walls."); return; }
+    const made = [], noHeight = new Set();
+    for (const w of wf.walls) {
+      if (wf.off.has(w.id)) continue;
+      const condId = wf.map[w.tag || "?"];
+      if (!condId) continue;
+      const cond = condById[condId];
+      const h = Number(cond?.height_ft) || 0;
+      if (!(h > 0)) { noHeight.add(cond?.finish_tag || "?"); continue; }
+      const LF = Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]) * upp;
+      made.push({
+        sheet_id: wf.key, condition_id: condId, measure_role: "surface_area", height_ft: h,
+        verts_norm: [[w.a[0] / tp.img.w, w.a[1] / tp.img.h], [w.b[0] / tp.img.w, w.b[1] / tp.img.h]],
+        computed: { area_sf: +(LF * h).toFixed(2), perimeter_lf: +LF.toFixed(2) },
+        origin: { method: "find_walls_v1", reviewed: true, confidence: w.confidence, ...(w.tag ? { plan_tag: w.tag } : {}), ...(w.tagSource ? { tag_source: w.tagSource } : {}), thickness_in: w.thickIn },
+      });
+    }
+    if (!made.length) { setCommitMsg(noHeight.size ? `Set a height for ${[...noHeight].join(", ")} first.` : "Nothing to add — map at least one tag to an assembly."); return; }
+    dispatchShape({ type: "add", shapes: made });
+    const lf = made.reduce((n, sh) => n + sh.computed.perimeter_lf, 0);
+    setWallFind(null);
+    setCommitMsg(`Added ${made.length} wall takeoff${made.length === 1 ? "" : "s"} — ${fl(lf)}.${noHeight.size ? ` Skipped ${[...noHeight].join(", ")} (no height).` : ""}`);
+  }
+
   // Surface Area — trace the wall run in plan; SF = traced LF × the condition's
   // height. The wall-tile "stack" workflow: set tile height once, trace walls.
   function commitSurface(points, baked = false) {
@@ -8874,7 +8963,7 @@ export default function TakeoffCanvas() {
           <button type="button" onClick={addCondition} title="Add assembly" aria-label="Add assembly"><Icon name="plus" size={14} /></button>
           <button type="button" onClick={() => setWorkspaceDetailsOpen((v) => !v)} aria-expanded={workspaceDetailsOpen} disabled={!aCond}>Properties</button></>}
         history={<><button type="button" onClick={() => poly.length ? dropLastPoint() : undoShapeCommand()} title="Undo (⌘Z)" aria-label="Undo"><Icon name="undo" size={16} /></button><button type="button" onClick={redoShapeCommand} title="Redo (⇧⌘Z)" aria-label="Redo"><span style={{ display: "flex", transform: "scaleX(-1)" }}><Icon name="undo" size={16} /></span></button></>}
-        aids={<>{!simple && <button type="button" aria-pressed={tool === "zone"} onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))} title="Zone check — trace a region (an apartment, a wing) to read every assembly's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."><Icon name="zone" size={15} />Zone</button>}<button type="button" aria-pressed={snapOn} onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"><Icon name="snap" size={15} />Snap</button><button type="button" aria-pressed={angleOn} onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides"><Icon name="angle" size={15} />45°</button>{!simple && <>{draftMenu}<span className="calm-separator" />{annotations.control}</>}</>}
+        aids={<>{!simple && <button type="button" aria-pressed={tool === "zone"} onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))} title="Zone check — trace a region (an apartment, a wing) to read every assembly's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."><Icon name="zone" size={15} />Zone</button>}<button type="button" aria-pressed={snapOn} onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"><Icon name="snap" size={15} />Snap</button><button type="button" aria-pressed={!!wallFind} onClick={() => (wallFind ? setWallFind(null) : runFindWalls())} title="Find walls — read the wall runs from this sheet's CAD lines and suggest wall takeoffs by tag"><Icon name="surface" size={15} />Find walls</button><button type="button" aria-pressed={angleOn} onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides"><Icon name="angle" size={15} />45°</button>{!simple && <>{draftMenu}<span className="calm-separator" />{annotations.control}</>}</>}
         action={finishOk && <button type="button" onClick={finishShape}>Finish ({poly.length})</button>}
         scaleMenu={<><button type="button" onClick={() => setUnits((u) => u === "metric" ? "imperial" : "metric")} title="Switch display units">{units === "metric" ? "m" : "ft"}</button><ToolMenu title={scaleTitle} onOpenChange={onScaleMenuDepth} face={<span data-tour="scale">{scaleFace}</span>} faceStyle={{ fontFamily: "var(--f-mono)", fontSize: 11.5, ...scaleFaceStyle }} menuStyle={{ minWidth: 250 }} items={scaleItems} /></>}
       />}
@@ -8957,6 +9046,10 @@ export default function TakeoffCanvas() {
           <button onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${snapOn ? "var(--c-positive)" : "var(--ink-faint)"}`, background: snapOn ? "var(--c-positive)" : "transparent", color: snapOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
             <Icon name="snap" size={15} />Snap
+          </button>
+          <button onClick={() => (wallFind ? setWallFind(null) : runFindWalls())} title="Find walls — read the wall runs from this sheet's CAD lines and suggest wall takeoffs by tag"
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${wallFind ? "var(--cobalt)" : "var(--ink-faint)"}`, background: wallFind ? "var(--cobalt)" : "transparent", color: wallFind ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
+            <Icon name="surface" size={15} />Find walls
           </button>
           <button onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides — the next segment locks to the 45° family as you draw (hold ⇧ to force the lock at any angle)"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${angleOn ? "var(--cobalt)" : "var(--ink-faint)"}`, background: angleOn ? "var(--cobalt)" : "transparent", color: angleOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
@@ -9311,6 +9404,7 @@ export default function TakeoffCanvas() {
            {simpleTile("linear", "linear", "Line", "Line — trims, bead, backing; double-click or Enter to finish", "L")}
            {simpleTile("count", "count", "Count", "Count — click each item (frames, access panels)", "C")}
            {simpleTile("symbol", "symbol", "Auto count", "Auto count — box one symbol, the app counts every match", "Y")}
+           {simpleTile("findwalls", "surface", "Find walls", "Find walls — read the wall runs from this sheet's CAD lines and suggest wall takeoffs by tag", null, () => { setTool("select"); if (wallFind) setWallFind(null); else runFindWalls(); }, { armed: !!wallFind })}
            <span className="vg-rail-group">Adjust</span>
            {simpleTile("deduct", "deduct", "Cut out", "Cut out — remove an opening from an area", "D", null, { tint: "var(--c-danger)" })}
            {simpleTile("calibrate", "calibrate", "Set scale", "Set scale — click two points of a known dimension", null)}
@@ -10238,6 +10332,20 @@ export default function TakeoffCanvas() {
                         Handles (corner diamonds + edge grips) rise on the hovered/selected
                         region: drag a corner, drag an edge to move the whole line, Shift-click
                         an edge to add a point, select a corner + Delete to remove it. */}
+                    {wallFind && wallFind.key === p.key && (
+                      <g data-find-walls>
+                        {wallFind.walls.map((w) => {
+                          const off = wallFind.off.has(w.id);
+                          const cid = wallFind.map[w.tag || "?"];
+                          const col = off ? "#8a8a8a" : cid ? (condById[cid]?.color || "#1f3fc7") : "#d9822b";
+                          return <line key={"fw" + w.id} x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke={col}
+                            strokeOpacity={off ? 0.35 : w.tagSource === "thickness" || !w.tag ? 0.45 : 0.7}
+                            strokeWidth={Math.max(w.thickPx, 3 / tf.scale)} strokeDasharray={off ? `${4 / tf.scale} ${4 / tf.scale}` : undefined}>
+                            <title>{`${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${off ? " · dropped" : ""}`}</title>
+                          </line>;
+                        })}
+                      </g>
+                    )}
                     {proposal && proposal.key === p.key && proposal.regions.map((r, i) => {
                       const col = r.kind === "neg" ? "#b03a26" : "#1f3fc7";
                       const s = tf.scale;
@@ -10737,6 +10845,31 @@ export default function TakeoffCanvas() {
         {/* live readout — top-right, at right:56 so it clears the panel rail's
             column entirely (right:14, 34px wide — same clearance the zone panel
             uses) instead of the old magic maxHeight tuned to the rail's height. */}
+        {wallFind && (() => {
+          const groups = wallFindGroups(wallFind);
+          const opts = [...conditions].sort((a, b) => (b.measure === "wall") - (a.measure === "wall") || String(a.finish_tag).localeCompare(String(b.finish_tag)));
+          const n = wallFind.walls.filter((w) => !wallFind.off.has(w.id) && wallFind.map[w.tag || "?"]).length;
+          return (
+            <div data-find-walls-panel style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 300, maxHeight: "60%", overflowY: "auto", padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5 }}>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6 }}>Find walls — review</div>
+              <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag. Click a run on the plan to drop or restore it. Faded runs were matched by thickness only — check them.</div>
+              {groups.map((g) => (
+                <div key={g.tag} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <span style={{ minWidth: 54, fontWeight: 700 }}>{g.tag === "?" ? "Untagged" : g.tag}</span>
+                  <span style={{ minWidth: 70, color: "var(--ink-secondary)", fontVariantNumeric: "tabular-nums" }}>{g.n} · {fl(g.lf, 0)}</span>
+                  <select aria-label={`Assembly for ${g.tag}`} value={wallFind.map[g.tag] || ""} onChange={(e) => { const v = e.target.value; setWallFind((wf) => ({ ...wf, map: { ...wf.map, [g.tag]: v } })); }} style={{ flex: 1, minWidth: 0 }}>
+                    <option value="">Skip</option>
+                    {opts.map((c) => <option key={c.id} value={c.id}>{c.finish_tag}{c.label ? ` — ${c.label}` : ""}</option>)}
+                  </select>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button type="button" onClick={commitWallFind} disabled={!n} style={{ flex: 1, padding: "7px 10px", border: "none", background: n ? "var(--c-positive)" : "var(--ink-faint)", color: "var(--paper-bright)", fontWeight: 600, cursor: n ? "pointer" : "default" }}>Add {n} wall{n === 1 ? "" : "s"}</button>
+                <button type="button" onClick={() => setWallFind(null)} style={{ padding: "7px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer" }}>Cancel</button>
+              </div>
+            </div>
+          );
+        })()}
         <div data-quantity-readout style={{ display: (workspaceLayout && !workspaceArrangement.readout) || (tool === "select" && agentOpen) ? "none" : undefined, position: "absolute", ...(isNarrow
           // phones: a bottom strip — the top-right box plus the panel rail was
           // covering the entire screen. bottom:64 clears the bottom-center toast.
