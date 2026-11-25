@@ -192,7 +192,10 @@ def ai_request(cfg: dict, path: str, body: dict | None = None, timeout: int = AI
     url = cfg["ai_base_url"].rstrip("/") + path
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET",
+                                 # RunPod's proxy sits behind Cloudflare, which refuses Python's default
+                                 # "Python-urllib" signature with Error 1010 — name ourselves instead.
                                  headers={"Content-Type": "application/json", "Accept": "application/json",
+                                          "User-Agent": "VanguardTakeoff/1.0 (+https://takeoff.vanguarddrywall.ca)",
                                           **({"Authorization": f"Bearer {cfg['ai_api_key']}"} if cfg.get("ai_api_key") else {})})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as res:
