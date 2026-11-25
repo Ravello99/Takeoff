@@ -48,6 +48,7 @@ export interface FoundWall {
   tag: string | null;
   tagSource: TagSource | null;
   confidence: number;               // 0–1
+  features: number[];               // FEATURE_NAMES order — the wall checker's input
 }
 
 export interface FindWallsResult {
@@ -72,6 +73,14 @@ export const NEAR_TAG_FT = 6;          // a leaderless tag claims a wall within 
 export const PEN_MIN_YIELD = 0.3;      // share of a pen's ink that pairs at wall spacing
 export const PEN_MIN_FT = 20;          // ...and at least this much of it
 export const HATCH_PEN_MIN_YIELD = 0.12; // a lighter pen is searched for hatched walls when this much of it pairs
+/** The wall checker's inputs, in order (lib/wallModel; server wallmodel.py trains on them).
+ *  Append only — a model trained on an older list keeps working on the prefix it knows. */
+export const FEATURE_NAMES = [
+  "thick_in", "log_len_ft", "off_axis_deg", "main_pen", "pen_width_rel", "pen_lum", "hatch_per_ft",
+  "tag_leader", "tag_near", "tag_run", "tag_thickness", "tag_none",
+  "junctions", "free_ends", "text_near", "pos_x", "pos_y", "parallel_runs", "thick_vs_tag_in", "thick_share",
+] as const;
+export const FEATURE_VERSION = 1;
 export const TAG_RE = /^[A-Z]{1,3}-?\d{1,2}[A-Z]?$/;
 
 const SEG_CURVE = 1, SEG_CLIP = 2;
@@ -86,7 +95,7 @@ interface Line {
 }
 
 interface Strip { lo: number; hi: number; rlo: number; rhi: number; t0: number; t1: number; g: number }
-interface Slab { g: number; th: number; rlo: number; rhi: number; t0: number; t1: number }
+interface Slab { g: number; th: number; rlo: number; rhi: number; t0: number; t1: number; main?: boolean; pw?: number; pl?: number }
 
 const penKey = (w: number, l: number) => `${Math.round(w * 20) / 20}|${Math.round(l / 16)}`;
 
@@ -317,13 +326,14 @@ function hatchTester(inp: FindWallsInput, ppf: number) {
     const k = `${Math.floor((x1 + x2) / 2 / cell)},${Math.floor((y1 + y2) / 2 / cell)}`;
     let a = grid.get(k); if (!a) grid.set(k, (a = [])); a.push(i);
   }
-  return (s: Slab): boolean => {
+  const count = (s: Slab, cap: number): number => {
     const c = Math.cos(s.th), sn = Math.sin(s.th);
     const pts = [toXY(s.th, s.t0, s.rlo), toXY(s.th, s.t1, s.rlo), toXY(s.th, s.t0, s.rhi), toXY(s.th, s.t1, s.rhi)];
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
     const thick = s.rhi - s.rlo, len = s.t1 - s.t0;
     let hits = 0;
-    const need = Math.max(3, Math.min(12, 0.25 * len / thick));
+    const need = cap;
+    void len;
     for (let cx = Math.floor(Math.min(...xs) / cell); cx <= Math.floor(Math.max(...xs) / cell); cx++)
       for (let cy = Math.floor(Math.min(...ys) / cell); cy <= Math.floor(Math.max(...ys) / cell); cy++)
         for (const i of grid.get(`${cx},${cy}`) || []) {
@@ -335,10 +345,12 @@ function hatchTester(inp: FindWallsInput, ppf: number) {
           const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
           const t = mx * c + my * sn, r = -mx * sn + my * c;
           if (t < s.t0 || t > s.t1 || r < s.rlo + 0.2 || r > s.rhi - 0.2) continue;
-          if (++hits >= need) return true;
+          if (++hits >= need) return hits;
         }
-    return false;
+    return hits;
   };
+  const test = (s: Slab): boolean => count(s, Math.max(3, Math.min(12, 0.25 * (s.t1 - s.t0) / (s.rhi - s.rlo)))) >= Math.max(3, Math.min(12, 0.25 * (s.t1 - s.t0) / (s.rhi - s.rlo)));
+  return Object.assign(test, { count });
 }
 
 function median(a: number[]): number { if (!a.length) return 0; const s = [...a].sort((p, q) => p - q); return s[s.length >> 1]; }
@@ -374,18 +386,20 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
   const slabsOf = (ls: Line[]) => weld(stackSlabs(pairStrips(ls, gapMin, tMax, minPiece), groupAngles, tMin, tMax, minPiece), WELD_GAP_FT * ppf);
 
   // ── 2–4. pair, stack, weld — the wall pens unconditionally ──
-  const slabs = slabsOf(lines.filter((L) => chosenSet.has(L.pen)));
+  const mainW = Math.max(...chosen.map((p) => penInfo[p.pen].width), 0);
+  const mainL = chosen.length ? penInfo[chosen[0].pen].lum : 0;
+  const slabs = slabsOf(lines.filter((L) => chosenSet.has(L.pen))).map((s) => ({ ...s, main: true, pw: mainW, pl: mainL }));
   // ...and any other pen that draws some of its walls, where the faces hold a
   // hatch (block, poché, rated-partition hatch) — offices often draw part of
   // the plan's walls in the same light pen as the casework and fixtures
   const others = penStats.filter((p) => !chosenSet.has(p.pen) && p.yield >= HATCH_PEN_MIN_YIELD);
+  const hatched = hatchTester(inp, ppf);
   if (others.length) {
-    const hatched = hatchTester(inp, ppf);
     for (const p of others) {
       for (const s of slabsOf(penLines.get(p.pen) || [])) {
         if (s.t1 - s.t0 < MIN_WALL_FT * ppf || !hatched(s)) continue;
         const dup = slabs.some((o) => o.g === s.g && Math.min(o.rhi, s.rhi) - Math.max(o.rlo, s.rlo) > 0 && Math.min(o.t1, s.t1) - Math.max(o.t0, s.t0) > 0.5 * (s.t1 - s.t0));
-        if (!dup) slabs.push(s);
+        if (!dup) slabs.push({ ...s, main: false, pw: penInfo[p.pen].width, pl: penInfo[p.pen].lum });
       }
     }
   }
@@ -393,7 +407,7 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
     .filter((s) => s.t1 - s.t0 >= MIN_WALL_FT * ppf)
     .map((s) => {
       const rm = (s.rlo + s.rhi) / 2;
-      return { a: toXY(s.th, s.t0, rm), b: toXY(s.th, s.t1, rm), thick: s.rhi - s.rlo, th: s.th, g: s.g, rlo: s.rlo, rhi: s.rhi, t0: s.t0, t1: s.t1 };
+      return { a: toXY(s.th, s.t0, rm), b: toXY(s.th, s.t1, rm), thick: s.rhi - s.rlo, th: s.th, g: s.g, rlo: s.rlo, rhi: s.rhi, t0: s.t0, t1: s.t1, main: !!s.main, pw: s.pw || 0, pl: s.pl || 0, hatch: hatched.count(s, 400) };
     });
   // a "wall" with words inside it is a note box, a keynote tag or a title strip
   // drawn with a double border — real walls don't carry text between their faces
@@ -565,6 +579,44 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
     if (best && bv / tot >= 0.7) { tagOf[k] = best; source[k] = "thickness"; }
   });
 
+  // ── 6. features: what the wall checker model learns from (lib/wallModel) ──
+  const maxPw = Math.max(1e-6, ...penInfo.map((p) => p.width));
+  let sx = 1, sy = 1;
+  for (let i = 0; i < inp.segs.length; i += 2) if (inp.segs[i] > sx) sx = inp.segs[i];   // even = x, odd = y
+  for (let i = 1; i < inp.segs.length; i += 2) if (inp.segs[i] > sy) sy = inp.segs[i];
+  const totLen = raw.reduce((n, w) => n + (w.t1 - w.t0), 0) || 1;
+  const tagThick = new Map<string, number[]>();
+  raw.forEach((_, k) => { const t = tagOf[k]; if (t) { let a = tagThick.get(t); if (!a) tagThick.set(t, (a = [])); a.push(thickIn[k]); } });
+  const textMid = (inp.texts || []).map((sp) => [(sp.x0 + sp.x1) / 2, (sp.y0 + sp.y1) / 2]);
+  const features: number[][] = raw.map((w, k) => {
+    const lenFt = Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]) / ppf;
+    const deg = (w.th * 180) / Math.PI % 90;
+    const offAxis = Math.min(deg, 90 - deg);
+    let junctions = 0, freeEnds = 0, parallel = 0;
+    for (const end of [w.a, w.b]) {
+      const touches = raw.some((o, j) => j !== k && segDist(end[0], end[1], o.a, o.b) <= o.thick / 2 + w.thick * 0.75 + 1);
+      if (!touches) freeEnds++;
+    }
+    raw.forEach((o, j) => {
+      if (j === k) return;
+      if ([o.a, o.b].some((e) => segDist(e[0], e[1], w.a, w.b) <= w.thick / 2 + o.thick * 0.75 + 1) && Math.abs(Math.cos(o.th - w.th)) < 0.5) junctions++;
+      if (o.g === w.g && Math.abs((o.rlo + o.rhi) / 2 - (w.rlo + w.rhi) / 2) < 4 * ppf && Math.min(o.t1, w.t1) - Math.max(o.t0, w.t0) > 0.5 * (w.t1 - w.t0)) parallel++;
+    });
+    let textNear = 0;
+    for (const [x, y] of textMid) if (segDist(x, y, w.a, w.b) < 2 * ppf && ++textNear >= 20) break;
+    const tt = tagOf[k] ? median(tagThick.get(tagOf[k] as string) || []) : null;
+    const same = raw.reduce((n, o, j) => n + (Math.abs(thickIn[j] - thickIn[k]) <= 0.5 ? o.t1 - o.t0 : 0), 0) / totLen;
+    const src = source[k];
+    return [
+      +thickIn[k].toFixed(3), +Math.log1p(lenFt).toFixed(4), +offAxis.toFixed(2), w.main ? 1 : 0, +(w.pw / maxPw).toFixed(3), +(w.pl / 255).toFixed(3),
+      +(w.hatch / Math.max(lenFt, 0.5)).toFixed(3),
+      src === "leader" ? 1 : 0, src === "near" ? 1 : 0, src === "run" ? 1 : 0, src === "thickness" ? 1 : 0, src ? 0 : 1,
+      junctions, freeEnds, textNear,
+      +(((w.a[0] + w.b[0]) / 2) / sx).toFixed(4), +(((w.a[1] + w.b[1]) / 2) / sy).toFixed(4),
+      parallel, tt == null ? 0 : +Math.abs(thickIn[k] - tt).toFixed(3), +same.toFixed(4),
+    ];
+  });
+
   const CONF: Record<TagSource, number> = { leader: 0.95, near: 0.8, run: 0.75, thickness: 0.55 };
   const walls: FoundWall[] = raw.map((w, k) => ({
     id: k,
@@ -574,6 +626,7 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
     lengthFt: +(Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]) / ppf).toFixed(2),
     tag: tagOf[k], tagSource: source[k],
     confidence: source[k] ? CONF[source[k] as TagSource] : 0.3,
+    features: features[k],
   }));
 
   const tagAgg = new Map<string, { count: number; lengthFt: number; th: number[] }>();

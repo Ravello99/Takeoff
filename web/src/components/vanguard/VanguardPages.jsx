@@ -466,6 +466,49 @@ function AISettings() {
   );
 }
 
+// The wall checker (Find walls' learned filter): how much it has learned, how
+// well it does on sheets it never saw, and a Retrain button. It retrains on its
+// own every 300 new reviews; Retrain is for "use today's reviews now".
+function WallCheckerPanel() {
+  const [st, setSt] = useState(null);
+  const [msg, setMsg] = useState("");
+  const load = useCallback(() => api("GET", "/api/ai/walls/model").then(setSt, () => setSt(null)), []);
+  useEffect(() => { load(); }, [load]);
+  const retrain = useSubmit(async () => {
+    setMsg("");
+    const r = await api("POST", "/api/ai/walls/train");
+    await load();
+    setMsg(`Retrained in ${r.seconds ?? "?"}s on ${r.metrics.rows} reviews.`);
+  });
+  if (!st) return null;
+  const m = st.model?.metrics;
+  const pct = (v) => (v == null ? "—" : `${Math.round(v * 100)}%`);
+  return (
+    <section className="vp-panel">
+      <div className="vp-panel-head">
+        <h2>Wall checker</h2>
+        <span className={st.model ? "vp-pill vp-pill-ok" : "vp-pill"}>{st.model ? "Trained" : "Learning"}</span>
+        <span className="vp-muted vp-small">{st.decisions} reviewed runs{st.since_train ? ` · ${st.since_train} new since the last training` : ""}{st.training ? " · training now…" : ""}</span>
+        <button className="vp-btn" disabled={retrain.busy || st.decisions < 40} onClick={retrain.submit}>{retrain.busy ? "Training…" : "Retrain now"}</button>
+      </div>
+      <p className="vp-muted vp-small">
+        Find walls learns from every run your team keeps or drops, and uses that to drop likely non-walls (note boxes, frames, casework) before you review.
+        It runs in the browser — no AI server needed — and retrains on its own every 300 new reviews.
+      </p>
+      {m ? (
+        <div className="vp-small" style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
+          <span>Correct on unseen sheets: <strong>{pct(m.accuracy)}</strong></span>
+          <span>Junk it catches: <strong>{pct(m.junk_caught)}</strong></span>
+          <span>Real walls it would drop: <strong>{pct(m.walls_lost)}</strong></span>
+          <span className="vp-muted">Learned from {m.rows} runs · {st.model.trees.length} trees · {new Date(st.model.trained_at * 1000).toLocaleString()}</span>
+        </div>
+      ) : <p className="vp-small">It needs at least 40 reviewed runs, some kept and some dropped. Review a sheet or two with Find walls (click junk runs to drop them, then Add) and it will start.</p>}
+      {retrain.error && <p className="vp-error">{retrain.error}</p>}
+      {msg && <p className="vp-ok">{msg}</p>}
+    </section>
+  );
+}
+
 function TeamPage({ user, emailEnabled, onEmailChanged }) {
   const [users, setUsers] = useState([]);
   const [invites, setInvites] = useState([]);
@@ -570,6 +613,7 @@ function TeamPage({ user, emailEnabled, onEmailChanged }) {
 
       <EmailSettings onChanged={onEmailChanged} />
       <AISettings />
+      {user?.role === "admin" && <WallCheckerPanel />}
     </main>
   );
 }

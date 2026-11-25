@@ -315,6 +315,42 @@ class ServerTest(unittest.TestCase):
         finally:
             fake.shutdown(); fake.server_close()
 
+    def test_wall_model(self):
+        import random as _r
+        admin = Client(self.port)
+        admin.req("POST", "/api/setup", {"name": "A", "email": "wm@v.ca", "password": "correct horse"})
+        s, st, _ = admin.req("GET", "/api/ai/walls/model")
+        self.assertEqual((s, st["model"], st["decisions"]), (200, None, 0))
+        # too little to learn from → a clear refusal
+        self.assertEqual(admin.req("POST", "/api/ai/walls/train")[0], 400)
+        # reviews from 6 sheets: thin, unhatched, untagged runs are dropped; tagged hatched ones kept
+        rng = _r.Random(3)
+        for sh in range(6):
+            rows = []
+            for _ in range(60):
+                y = rng.random() < 0.7
+                f = [rng.uniform(4, 8) if y else rng.uniform(2, 3), rng.uniform(1, 3), 0, 1, 1, 0.5, rng.uniform(2, 9) if y else 0,
+                     1 if y else 0, 0, 0, 0, 0 if y else 1, 2 if y else 0, 0 if y else 2, 0, rng.random(), rng.random(), 0, 0, 0.3]
+                rows.append({"f": f, "y": int(y), "tag": "P1" if y else None})
+            rows.append({"f": ["bad"], "y": 1})          # junk rows are skipped
+            s, out, _ = admin.req("POST", "/api/ai/walls/decisions", {"sheet": f"A20{sh}", "project": "p1", "feature_version": 1, "rows": rows})
+            self.assertEqual((s, out["saved"]), (200, 60))
+        import time as _t
+        for _ in range(100):                               # 360 reviews ≥ 300 → trains on its own
+            st = admin.req("GET", "/api/ai/walls/model")[1]
+            if st["model"] and not st["training"]:
+                break
+            _t.sleep(0.1)
+        self.assertIsNotNone(st["model"])
+        self.assertEqual(st["model"]["format"], "gbdt-v1")
+        self.assertGreater(st["model"]["metrics"]["accuracy"], 0.9)
+        # manual retrain (admin) learns from everything so far
+        s, out, _ = admin.req("POST", "/api/ai/walls/train")
+        self.assertEqual(s, 200)
+        self.assertIn("auc", out["metrics"])
+        self.assertEqual(admin.req("GET", "/api/ai/walls/model")[1]["since_train"], 0)
+        self.assertEqual(admin.req("POST", "/api/ai/walls/decisions", {"rows": [{}] * 5001})[0], 400)
+
     def test_lockout(self):
         c = Client(self.port)
         for _ in range(5):

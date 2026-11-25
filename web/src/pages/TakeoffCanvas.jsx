@@ -222,7 +222,8 @@ import { oneClickEnabled, ONE_CLICK_GATE_MESSAGE, commandBoxEnabled, ocrEnabled 
 import { computeShapeMetrics, needsMetrics, recalibrateShapes, linearVerticalFt } from "../lib/shapeMetrics.js";
 import { fmtCheckLen, parseLenInput, checkVerdict, M_PER_FT, areaVal, areaUnit, lenVal, lenUnit, calInputToFeet, heightVal, heightUnit, heightInputToFeet, heightStep, dimInputStr, dimLabel, volVal, volUnit } from "../lib/units";
 import * as panelGeom from "../lib/panelGeometry.js";
-import { findWalls } from "../lib/findWalls";
+import { findWalls, FEATURE_NAMES, FEATURE_VERSION } from "../lib/findWalls";
+import { scoreRun, isWallModel, featureIndexMap, DROP_BELOW, DOUBT_BELOW } from "../lib/wallModel";
 import { findScheduleOnPage } from "../lib/scheduleFinder";
 import { api as vanguardApi, onTransfer } from "../lib/vanguardApi.js";
 import ScheduleReader from "../components/vanguard/ScheduleReader.jsx";
@@ -5077,6 +5078,30 @@ export default function TakeoffCanvas() {
   // wall spacing, split at openings and intersections, tagged from the plan's
   // wall tags. Nothing is created until the estimator reviews: each tag maps to
   // an assembly, a click drops a wrong run, and Add creates surface_area takeoffs.
+  // the wall checker model (server-trained from everyone's reviews); the last
+  // one seen is kept in this browser so Find walls still scores runs offline
+  async function loadWallModel() {
+    try {
+      const st = await vanguardApi("GET", "/api/ai/walls/model");
+      if (isWallModel(st?.model)) { try { localStorage.setItem("vt_wall_model", JSON.stringify(st.model)); } catch { /* storage full */ } return { model: st.model, decisions: st.decisions }; }
+      return { model: null, decisions: st?.decisions || 0 };
+    } catch {
+      try { const m = JSON.parse(localStorage.getItem("vt_wall_model") || "null"); return { model: isWallModel(m) ? m : null, decisions: null, offline: true }; } catch { return { model: null, decisions: null, offline: true }; }
+    }
+  }
+  // reviews go to the server to train the checker; offline they wait in this browser
+  async function sendWallDecisions(batch) {
+    let queue = [];
+    try { queue = JSON.parse(localStorage.getItem("vt_wall_queue") || "[]"); } catch { queue = []; }
+    if (batch) queue.push(batch);
+    const left = [];
+    for (const b of queue) {
+      try { await vanguardApi("POST", "/api/ai/walls/decisions", { json: b }); }
+      catch (e) { if (!e?.status || e.status >= 500) left.push(b); }   // keep for later only when the server couldn't be reached
+    }
+    try { if (left.length) localStorage.setItem("vt_wall_queue", JSON.stringify(left.slice(-50))); else localStorage.removeItem("vt_wall_queue"); } catch { /* storage full */ }
+  }
+
   async function runFindWalls() {
     const tp = focusPanel;
     if (!tp || !tp.img.w) { setCommitMsg("Open a sheet first."); return; }
@@ -5093,11 +5118,23 @@ export default function TakeoffCanvas() {
       res = findWalls({ segs, meta: segMetaRef.current.get(tp.key), width: segWidthRef.current.get(tp.key), lum: segLumRef.current.get(tp.key), texts, pxPerFt: 1 / upp, tags });
     } catch (err) { setCommitMsg("Find walls failed on this sheet: " + (err?.message || err)); return; }
     if (!res.walls.length) { setCommitMsg("No walls found — this sheet may draw walls as single lines or fills."); return; }
+    // the wall checker: score every run; likely junk starts dropped, doubtful runs are marked
+    const wm = await loadWallModel();
+    const off = new Set(), auto = new Set();
+    let doubtful = 0;
+    if (wm.model) {
+      const map = featureIndexMap(wm.model, FEATURE_NAMES);
+      for (const w of res.walls) {
+        w.score = scoreRun(wm.model, w.features, map);
+        if (w.score < DROP_BELOW) { off.add(w.id); auto.add(w.id); }
+        else if (w.score < DOUBT_BELOW) doubtful++;
+      }
+    }
     const byTag = new Map(conditions.filter((c) => c.finish_tag).map((c) => [c.finish_tag.trim().toUpperCase(), c.id]));
     const map = {};
     for (const w of res.walls) { const t = w.tag || "?"; if (!(t in map)) map[t] = t === "?" ? "" : (byTag.get(t) || ""); }
-    setWallFind({ key: tp.key, walls: res.walls, map, off: new Set(), pens: res.pens });
-    setCommitMsg(`Found ${res.walls.length} wall runs. Map each tag to an assembly, click a run to drop it, then Add.`);
+    setWallFind({ key: tp.key, walls: res.walls, map, off, auto, touched: new Set(), pens: res.pens, checker: { trained: !!wm.model, n: wm.model?.n || 0, decisions: wm.decisions, offline: !!wm.offline, dropped: auto.size, doubtful } });
+    setCommitMsg(`Found ${res.walls.length} wall runs${auto.size ? ` — the wall checker dropped ${auto.size} likely non-walls` : ""}. Map each tag to an assembly, click a run to drop or restore it, then Add.`);
   }
   const wallFindGroups = (wf) => {
     const g = new Map();
@@ -5124,7 +5161,7 @@ export default function TakeoffCanvas() {
       if (d < thr && d < bd) { bd = d; best = w; }
     }
     if (!best) return false;
-    setWallFind((wf) => { const off = new Set(wf.off); if (off.has(best.id)) off.delete(best.id); else off.add(best.id); return { ...wf, off }; });
+    setWallFind((wf) => { const off = new Set(wf.off); if (off.has(best.id)) off.delete(best.id); else off.add(best.id); const touched = new Set(wf.touched); touched.add(best.id); return { ...wf, off, touched }; });
     return true;
   }
   function commitWallFind() {
@@ -5151,6 +5188,17 @@ export default function TakeoffCanvas() {
     }
     if (!made.length) { setCommitMsg(noHeight.size ? `Set a height for ${[...noHeight].join(", ")} first.` : "Nothing to add — map at least one tag to an assembly."); return; }
     dispatchShape({ type: "add", shapes: made });
+    // training rows for the wall checker: kept runs that became takeoffs say "wall",
+    // runs the estimator dropped say "not a wall". A run only the checker dropped and
+    // nobody looked at teaches nothing (it would just echo the model), and a run whose
+    // tag was skipped as out of scope is still a wall — neither is sent.
+    const rows = [];
+    for (const w of wf.walls) {
+      const isOff = wf.off.has(w.id), mapped = !!wf.map[w.tag || "?"];
+      if (isOff && (!wf.auto?.has(w.id) || wf.touched?.has(w.id))) rows.push({ f: w.features, y: 0, p: w.score ?? null, tag: w.tag });
+      else if (!isOff && mapped) rows.push({ f: w.features, y: 1, p: w.score ?? null, tag: w.tag });
+    }
+    if (rows.length) sendWallDecisions({ project: store?.projectId || projectName || "", sheet: wf.key, feature_version: FEATURE_VERSION, rows });
     const lf = made.reduce((n, sh) => n + sh.computed.perimeter_lf, 0);
     setWallFind(null);
     setCommitMsg(`Added ${made.length} wall takeoff${made.length === 1 ? "" : "s"} — ${fl(lf)}.${noHeight.size ? ` Skipped ${[...noHeight].join(", ")} (no height).` : ""}`);
@@ -10454,8 +10502,8 @@ export default function TakeoffCanvas() {
                           const col = off ? "#8a8a8a" : cid ? (condById[cid]?.color || "#1f3fc7") : "#d9822b";
                           return <line key={"fw" + w.id} x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke={col}
                             strokeOpacity={off ? 0.35 : w.tagSource === "thickness" || !w.tag ? 0.45 : 0.7}
-                            strokeWidth={Math.max(w.thickPx, 3 / tf.scale)} strokeDasharray={off ? `${4 / tf.scale} ${4 / tf.scale}` : undefined}>
-                            <title>{`${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${off ? " · dropped" : ""}`}</title>
+                            strokeWidth={Math.max(w.thickPx, 3 / tf.scale)} strokeDasharray={off ? `${4 / tf.scale} ${4 / tf.scale}` : (w.score != null && w.score < DOUBT_BELOW ? `${10 / tf.scale} ${3 / tf.scale}` : undefined)}>
+                            <title>{`${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${w.score != null ? ` · wall checker ${Math.round(w.score * 100)}%` : ""}${off ? (wallFind.auto?.has(w.id) && !wallFind.touched?.has(w.id) ? " · dropped by the checker (click to restore)" : " · dropped") : ""}`}</title>
                           </line>;
                         })}
                       </g>
@@ -10993,6 +11041,11 @@ export default function TakeoffCanvas() {
             <div data-find-walls-panel style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 300, maxHeight: "60%", overflowY: "auto", padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5 }}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6 }}>Find walls — review</div>
               <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag. Click a run on the plan to drop or restore it. Faded runs were matched by thickness only — check them.</div>
+              <div style={{ fontSize: 11.5, marginBottom: 8, padding: "6px 8px", background: "var(--paper)", border: "1px solid var(--ink-faint)" }}>
+                {wallFind.checker?.trained
+                  ? <>Wall checker (learned from {wallFind.checker.n} reviews{wallFind.checker.offline ? ", offline copy" : ""}): dropped <b>{wallFind.checker.dropped}</b> likely non-walls (grey dashes — click to restore); <b>{wallFind.checker.doubtful}</b> doubtful runs are drawn dashed.</>
+                  : <>The wall checker is still learning{wallFind.checker?.decisions ? ` (${wallFind.checker.decisions} reviews so far)` : ""}. Every run you keep or drop here teaches it.</>}
+              </div>
               {groups.map((g) => (
                 <div key={g.tag} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                   <span style={{ minWidth: 54, fontWeight: 700 }}>{g.tag === "?" ? "Untagged" : g.tag}</span>

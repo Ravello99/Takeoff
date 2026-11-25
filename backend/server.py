@@ -104,6 +104,9 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS ai_log (
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, user_id INTEGER, image_hash TEXT, model TEXT,
   raw TEXT, result TEXT, final TEXT, ms INTEGER, created_at REAL NOT NULL, reviewed_at REAL);
+CREATE TABLE IF NOT EXISTS wall_decisions (
+  id INTEGER PRIMARY KEY, user_id INTEGER, project TEXT, sheet TEXT, feature_version INTEGER NOT NULL,
+  f TEXT NOT NULL, y INTEGER NOT NULL, p REAL, tag TEXT, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS resets (
   token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at REAL NOT NULL);
 """
@@ -188,6 +191,35 @@ def send_mail(cfg: dict, to: str, subject: str, text: str, html: str | None = No
 # ── AI (any OpenAI-compatible endpoint: vLLM on a RunPod Pod or Serverless) ──
 def ai_ready(cfg: dict) -> bool:
     return bool(cfg.get("ai_base_url"))
+
+
+WALL_AUTO_TRAIN = 300          # retrain on its own after this many new reviews
+WALL_TRAINING = threading.Event()
+
+
+def wall_model_status(c) -> dict:
+    cfg = get_settings(c)
+    model = None
+    if cfg.get("wall_model"):
+        try:
+            model = json.loads(cfg["wall_model"])
+        except ValueError:
+            model = None
+    total = c.execute("SELECT COUNT(*) FROM wall_decisions").fetchone()[0]
+    since = c.execute("SELECT COUNT(*) FROM wall_decisions WHERE id > ?", (int(cfg.get("wall_model_last_id") or 0),)).fetchone()[0]
+    return {"model": model, "decisions": total, "since_train": since, "training": WALL_TRAINING.is_set()}
+
+
+def train_wall_model(c) -> dict:
+    import wallmodel
+    last = c.execute("SELECT MAX(id) FROM wall_decisions").fetchone()[0] or 0
+    rows = [{"f": json.loads(r["f"]), "y": r["y"], "sheet": f'{r["project"]}|{r["sheet"]}'}
+            for r in c.execute("SELECT f, y, project, sheet FROM wall_decisions WHERE feature_version=? ORDER BY id DESC LIMIT ?",
+                               (wallmodel.FEATURE_VERSION, wallmodel.MAX_ROWS))][::-1]
+    model = wallmodel.train(rows, wallmodel.FEATURE_NAMES)
+    for k, v in (("wall_model", json.dumps(model, separators=(",", ":"))), ("wall_model_last_id", str(last))):
+        c.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+    return model
 
 
 def normalize_ai_url(url: str) -> str:
@@ -707,6 +739,17 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(404, "No such AI result.")
             c.execute("UPDATE ai_log SET final=?, reviewed_at=? WHERE id=?", (json.dumps(final), time.time(), log_id))
             return self.send_json(200, {"ok": True})
+        if p == ["ai", "walls", "decisions"] and m == "POST":
+            return self.wall_decisions(c, me)
+        if p == ["ai", "walls", "model"] and m == "GET":
+            return self.send_json(200, wall_model_status(c))
+        if p == ["ai", "walls", "train"] and m == "POST":
+            self.require_admin(c)
+            try:
+                model = train_wall_model(c)
+            except ValueError as e:
+                raise ApiError(400, str(e))
+            return self.send_json(200, {"ok": True, "metrics": model["metrics"], "seconds": model.get("seconds")})
         if p == ["ai", "log"] and m == "GET":
             self.require_admin(c)
             rows = c.execute("SELECT id, kind, model, ms, created_at, reviewed_at, (final IS NOT NULL) AS corrected FROM ai_log ORDER BY id DESC LIMIT 200").fetchall()
@@ -915,6 +958,50 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": [], "raw": text[:2000],
                                         "error": "The AI answered, but not with a list of wall types. Try a tighter crop of just the schedule."})
         return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": walls})
+
+    def wall_decisions(self, c, me):
+        """Find walls reviews → training rows: every run the estimator kept (y=1)
+        or dropped (y=0), with the features Find walls measured. Runs whose tag was
+        simply skipped (not in scope) are not sent: they say nothing about wall-ness."""
+        body = self.read_json()
+        rows = body.get("rows") or []
+        if not isinstance(rows, list) or len(rows) > 5000:
+            raise ApiError(400, "Send up to 5000 reviewed runs at a time.")
+        fv = int(body.get("feature_version") or 0)
+        project = str(body.get("project") or "")[:120]
+        sheet = str(body.get("sheet") or "")[:300]
+        now = time.time()
+        n = 0
+        for r in rows:
+            f, y = r.get("f"), r.get("y")
+            if y not in (0, 1) or not isinstance(f, list) or len(f) > 200 or not all(isinstance(v, (int, float)) for v in f):
+                continue
+            pr = r.get("p")
+            c.execute("INSERT INTO wall_decisions (user_id, project, sheet, feature_version, f, y, p, tag, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                      (me["id"], project, sheet, fv, json.dumps(f), y, float(pr) if isinstance(pr, (int, float)) else None, str(r.get("tag") or "")[:40] or None, now))
+            n += 1
+        status = wall_model_status(c)
+        if status["since_train"] >= WALL_AUTO_TRAIN and not WALL_TRAINING.is_set():
+            app = self.app
+            upto = c.execute("SELECT MAX(id) FROM wall_decisions").fetchone()[0] or 0
+            WALL_TRAINING.set()
+            def bg():
+                c2 = app.db()
+                try:
+                    # this request's rows commit as it returns: wait until they're visible
+                    for _ in range(100):
+                        if (c2.execute("SELECT MAX(id) FROM wall_decisions").fetchone()[0] or 0) >= upto:
+                            break
+                        time.sleep(0.05)
+                    with c2:
+                        train_wall_model(c2)
+                except Exception:
+                    pass                      # too few rows or one class only — the next batch tries again
+                finally:
+                    c2.close()
+                    WALL_TRAINING.clear()
+            threading.Thread(target=bg, daemon=True).start()
+        return self.send_json(200, {"ok": True, "saved": n, **{k: status[k] for k in ("decisions", "since_train")}})
 
     def create_reset(self, c, user_id: int, cfg: dict) -> str:
         token = secrets.token_urlsafe(24)
