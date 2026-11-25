@@ -5000,7 +5000,7 @@ export default function TakeoffCanvas() {
           const vp = page.getViewport({ scale: 1 });
           const tc = await page.getTextContent();
           const r = findScheduleOnPage(pageRuns(tc, vp));
-          hit = { key, score: r.score, text: r.text, heading: r.heading, label: `${extractSheetNumber(tc, vp) || labelsForFile(labelsByFile, f)[pg] || `Page ${pg}`}${counts.length > 1 ? ` · ${f}` : ""}` };
+          hit = { key, score: r.score, text: r.text, heading: r.heading, rect: r.rect, label: `${extractSheetNumber(tc, vp) || labelsForFile(labelsByFile, f)[pg] || `Page ${pg}`}${counts.length > 1 ? ` · ${f}` : ""}` };
         } catch { hit = { key, score: 0, text: "", heading: null, label: key }; }
         schedCacheRef.current.set(key, hit);
       }
@@ -5012,6 +5012,43 @@ export default function TakeoffCanvas() {
     return out.sort((a, b) => b.score - a.score).slice(0, 6);
   };
   const findProjectSchedule = useCallback((progress) => findScheduleImplRef.current(progress), []);
+  // a sheet (or just its schedule's area) drawn straight from the PDF to a PNG
+  // for the AI — no screenshots. rect is in scale-1 viewport px (the finder's
+  // frame); without one the whole sheet is drawn. Long side capped so the
+  // model's image budget is spent on the schedule, not on white space.
+  const renderSheetImageRef = useRef(null);
+  renderSheetImageRef.current = async (key, rect) => {
+    const { file, page: pg } = parseSheetKey(key || focusPanel?.key || sheetKey);
+    const pdf = await docFor(file);
+    const page = await pdf.getPage(pg);
+    const base = page.getViewport({ scale: 1 });
+    const pad = 12;
+    if (rect && rect.frac) rect = { x0: rect.x0 * base.width, y0: rect.y0 * base.height, x1: rect.x1 * base.width, y1: rect.y1 * base.height };
+    const r = rect ? { x0: Math.max(0, rect.x0 - pad), y0: Math.max(0, rect.y0 - pad), x1: Math.min(base.width, rect.x1 + pad), y1: Math.min(base.height, rect.y1 + pad) } : { x0: 0, y0: 0, x1: base.width, y1: base.height };
+    const w = r.x1 - r.x0, h = r.y1 - r.y0;
+    const scale = Math.min(4, (rect ? 2400 : 3000) / Math.max(w, h));
+    const vp = page.getViewport({ scale, offsetX: -r.x0 * scale, offsetY: -r.y0 * scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    return canvas.toDataURL("image/png");
+  };
+  const renderSheetImage = useCallback((key, rect) => renderSheetImageRef.current(key, rect), []);
+  // what the estimator is looking at: the focused sheet's visible area, as
+  // fractions of the sheet — "zoom to the schedule, then send it"
+  const visibleSheetArea = useCallback(() => {
+    const el = containerRef.current, tp = focusPanel;
+    if (!el || !tp || !tp.img.w) return null;
+    const b = el.getBoundingClientRect();
+    const a = toImage(b.left, b.top), z = toImage(b.right, b.bottom);
+    const fx = (x) => Math.min(1, Math.max(0, (x - tp.xOffset) / tp.img.w)), fy = (y) => Math.min(1, Math.max(0, y / tp.img.h));
+    const rect = { frac: true, x0: fx(a[0]), y0: fy(a[1]), x1: fx(z[0]), y1: fy(z[1]) };
+    if (rect.x1 - rect.x0 < 0.01 || rect.y1 - rect.y0 < 0.01) return null;
+    return { key: tp.key, rect };
+  }, [focusPanel, toImage]);
+  const currentSheetLabel = () => { const k = focusPanel?.key || sheetKey; const { file, page: pg } = parseSheetKey(k || ""); return labelsForFile(labelsByFile, file)[pg] || (pg > 1 ? `${file} p${pg}` : file); };
   useEffect(() => { vanguardApi("GET", "/api/status").then((st) => setAiEnabled(!!st?.ai_enabled), () => setAiEnabled(false)); }, []);
   function openReadSchedule() {
     if (!aiEnabled) { setCommitMsg("Connect your AI first — an admin can add it under Team → AI settings."); return; }
@@ -10916,7 +10953,7 @@ export default function TakeoffCanvas() {
         {/* live readout — top-right, at right:56 so it clears the panel rail's
             column entirely (right:14, 34px wide — same clearance the zone panel
             uses) instead of the old magic maxHeight tuned to the rail's height. */}
-        {schedOpen && <ScheduleReader findSchedule={findProjectSchedule} onClose={() => setSchedOpen(false)} onAdd={addScheduleAssemblies} />}
+        {schedOpen && <ScheduleReader findSchedule={findProjectSchedule} renderSheet={renderSheetImage} visibleArea={visibleSheetArea} currentSheet={currentSheetLabel()} onClose={() => setSchedOpen(false)} onAdd={addScheduleAssemblies} />}
         {wallFind && (() => {
           const groups = wallFindGroups(wallFind);
           const opts = [...conditions].sort((a, b) => (b.measure === "wall") - (a.measure === "wall") || String(a.finish_tag).localeCompare(String(b.finish_tag)));

@@ -27,11 +27,20 @@ async function fileToDataUrl(file) {
 
 const BASE_LABEL = { W1: "Standard", W2: "Acoustic", W3: "To deck", W4: "Acoustic to deck", W5: "2-layer rated", SW1: "Shaft wall", F1: "Furring / 1 side" };
 
-export default function ScheduleReader({ onAdd, onClose, findSchedule, addLabel = "to this project" }) {
+export default function ScheduleReader({ onAdd, onClose, findSchedule, renderSheet, visibleArea, currentSheet, addLabel = "to this project" }) {
   const [image, setImage] = useState(null);
   // project search: { status: "searching"|"done", progress, candidates: [{ key, label, score, text }], pick }
   const [search, setSearch] = useState(findSchedule ? { status: "searching", progress: "", candidates: [], pick: 0 } : null);
   const [showText, setShowText] = useState(false);
+  const [asPicture, setAsPicture] = useState(false);   // send the found schedule as a picture drawn from the PDF instead of its text
+  const [rendering, setRendering] = useState(false);
+  // draw a sheet (or its schedule area) straight from the PDF — no screenshot
+  const drawSheet = async (key, rect) => {
+    setRendering(true); setError("");
+    try { return await renderSheet(key, rect); }
+    catch (e) { setError("Couldn't draw that sheet: " + (e?.message || e)); return null; }
+    finally { setRendering(false); }
+  };
   const useImage = !search || search.status === "image";
   const found = search && search.status === "done" ? search.candidates[search.pick] : null;
   const [hint, setHint] = useState("");
@@ -71,7 +80,13 @@ export default function ScheduleReader({ onAdd, onClose, findSchedule, addLabel 
     setBusy(true); setError(""); setElapsed(0);
     timer.current = setInterval(() => setElapsed((s) => s + 1), 1000);
     try {
-      const r = await api("POST", "/api/ai/read-schedule", { json: found && !useImage ? { text: found.text, source: found.label, hint } : { image, hint } });
+      let payload;
+      if (found && !useImage && asPicture) {
+        const pic = await drawSheet(found.key, found.rect);
+        if (!pic) throw new Error("Couldn't draw the schedule from the PDF.");
+        payload = { image: pic, hint };
+      } else payload = found && !useImage ? { text: found.text, source: found.label, hint } : { image, hint };
+      const r = await api("POST", "/api/ai/read-schedule", { json: payload });
       if (r.error && !r.walls.length) setError(r.error);
       setResult({ ...r, rows: r.walls.map((w) => ({ ...normalizeWall(w), include: true })) });
     } catch (e) { setError(e.message); } finally { clearInterval(timer.current); setBusy(false); }
@@ -100,20 +115,32 @@ export default function ScheduleReader({ onAdd, onClose, findSchedule, addLabel 
                 {search.candidates.map((c, i) => <option key={c.key} value={i}>{c.label}{c.heading ? ` — ${c.heading}` : ""}</option>)}
               </select></label>
           )}
+          <div className="vp-row" style={{ justifyContent: "flex-start", gap: 14, flexWrap: "wrap" }}>
+            <label className="vp-small"><input type="radio" checked={!asPicture} onChange={() => setAsPicture(false)} /> Send the schedule's text <span className="vp-muted">(fastest)</span></label>
+            {renderSheet && <label className="vp-small"><input type="radio" checked={asPicture} onChange={() => setAsPicture(true)} /> Send a picture of it from the PDF <span className="vp-muted">(for tables the text reads badly; needs an image-capable model)</span></label>}
+          </div>
           <button type="button" className="vp-btn vp-ghost vp-small" onClick={() => setShowText((v) => !v)}>{showText ? "Hide" : "Show"} what the AI will read</button>
           {showText && <pre className="vs-text" style={{ maxHeight: 220, overflow: "auto", fontSize: 11, whiteSpace: "pre-wrap", background: "var(--paper)", padding: 8, border: "1px solid var(--ink-faint)" }}>{found.text}</pre>}
           <label className="va-f"><span>Anything the AI should know? (optional)</span>
             <input value={hint} onChange={(e) => setHint(e.target.value)} placeholder="e.g. all partitions go to deck unless noted" /></label>
           {error && <p className="vp-error">{error}</p>}
           <div className="vp-row">
-            <button className="vp-btn vp-ghost" onClick={() => setSearch({ ...search, status: "image" })} disabled={busy}>Use a screenshot instead</button>
+            <button className="vp-btn vp-ghost" onClick={() => setSearch({ ...search, status: "image" })} disabled={busy}>Pick it myself instead</button>
             <button className="vp-btn vp-primary" onClick={read} disabled={busy}>
-              {busy ? `Reading… ${elapsed}s${elapsed > 15 ? " (the first read after a quiet spell loads the model)" : ""}` : "Read schedule"}
+              {busy ? (rendering ? "Drawing the schedule…" : `Reading… ${elapsed}s${elapsed > 15 ? " (the first read after a quiet spell loads the model)" : ""}`) : "Read schedule"}
             </button>
           </div>
         </>)}
         {!result && useImage && (<>
-          {search?.missed && <p className="vp-small">Couldn't find a partition schedule in this project's text (the drawings may be scanned). Screenshot it instead.</p>}
+          {search?.missed && <p className="vp-small">Couldn't find a partition schedule in this project's text (the drawings may be scanned).</p>}
+          {renderSheet && (
+            <div className="vp-row" style={{ justifyContent: "flex-start" }}>
+              <button type="button" className="vp-btn vp-primary" disabled={busy || rendering} onClick={async () => { const v = visibleArea ? visibleArea() : null; const pic = await drawSheet(v?.key || null, v?.rect || null); if (pic) { setImage(pic); setResult(null); } }}>
+                {rendering ? "Drawing…" : `Use what's on screen${currentSheet ? ` (${currentSheet})` : ""}`}
+              </button>
+              <span className="vp-small vp-muted">Close this, zoom the plan to the schedule, then reopen Read schedule and click this. It's drawn sharp from the PDF — no screenshot. Or paste one below.</span>
+            </div>
+          )}
           <p className="vp-small vp-muted">Screenshot just the <strong>partition schedule / wall types</strong> from the drawings (Windows: <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>, Mac: <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>4</kbd>) and press <kbd>Ctrl</kbd>+<kbd>V</kbd> here, or choose an image file.</p>
           <label className={`vs-drop${image ? " has-image" : ""}`}
             onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); take(e.dataTransfer.files?.[0]); }}>
