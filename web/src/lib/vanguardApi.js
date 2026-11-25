@@ -35,6 +35,46 @@ export async function api(method, path, { json, raw, signal } = {}) {
   return res.arrayBuffer();
 }
 
+// ── plan-file transfers with progress ─────────────────────────────────────
+// fetch() can't report upload progress, so plan files go over XHR, and every
+// transfer is announced to whoever listens (the canvas shows a progress card).
+// Event: { id, dir: "up"|"down", name, loaded, total, done, error }
+const transferListeners = new Set();
+export function onTransfer(fn) { transferListeners.add(fn); return () => transferListeners.delete(fn); }
+const emit = (ev) => { for (const fn of transferListeners) { try { fn(ev); } catch { /* a listener's bug never breaks a transfer */ } } };
+let transferSeq = 0;
+
+export function transfer(method, path, { raw, name = "", dir = raw ? "up" : "down" } = {}) {
+  const id = ++transferSeq;
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, path);
+    xhr.withCredentials = true;
+    xhr.responseType = "arraybuffer";
+    if (method !== "GET") xhr.setRequestHeader("X-Vanguard", "1");
+    if (raw !== undefined) xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    const total0 = raw ? raw.byteLength || 0 : 0;
+    emit({ id, dir, name, loaded: 0, total: total0, done: false });
+    const prog = (e) => emit({ id, dir, name, loaded: e.loaded, total: e.lengthComputable ? e.total : total0, done: false });
+    if (dir === "up") xhr.upload.onprogress = prog; else xhr.onprogress = prog;
+    xhr.onerror = () => { emit({ id, dir, name, done: true, error: true }); reject(new ApiError(0, "Can't reach the Vanguard Takeoff server. Check your connection.")); };
+    xhr.onload = () => {
+      const ctype = xhr.getResponseHeader("Content-Type") || "";
+      const buf = xhr.response;
+      const asJson = () => { try { return JSON.parse(new TextDecoder().decode(buf)); } catch { return null; } };
+      emit({ id, dir, name, done: true, error: xhr.status >= 400 });
+      if (xhr.status >= 400) {
+        const j = ctype.includes("application/json") ? asJson() : null;
+        if (xhr.status === 401) notifySignedOut();
+        reject(new ApiError(xhr.status, j?.error || `Request failed (${xhr.status}).`));
+        return;
+      }
+      resolve(ctype.includes("application/json") ? asJson() : buf);
+    };
+    xhr.send(raw === undefined ? null : raw);
+  });
+}
+
 // The server is optional: a plain static host has no /api. Returns the status
 // object, or null when there is no Vanguard server behind this site.
 export async function serverStatus() {

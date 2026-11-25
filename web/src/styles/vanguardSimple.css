@@ -70,3 +70,32 @@
 .vg-pick-new { width: 100%; padding: 8px; border: 1px dashed var(--ink-faint); border-radius: 8px; background: none; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; color: var(--cobalt); }
 .vg-pick-new:hover { background: var(--paper-shadow); }
 .vg-pick-cat { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted); padding: 8px 8px 2px; }
+
+/* ── Vanguard: empty project + drawing transfer progress ─────────────────── */
+.vg-empty {
+  --vp-navy: #0B2556; --vp-gold: #B4973A; --vp-line: #DDE2EA; --vp-text: #1C2430; --vp-muted: #5E6878;
+  pointer-events: auto; max-width: 520px; width: calc(100% - 48px); background: #fff; color: var(--vp-text);
+  border: 2px dashed #C7D0DE; border-radius: 16px; padding: 34px 32px 26px; text-align: center;
+  box-shadow: 0 10px 34px rgba(11,37,86,.08); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.vg-empty-logo { width: 56px; height: 56px; object-fit: contain; margin-bottom: 6px; }
+.vg-empty h2 { font-size: 22px; margin: 6px 0 8px; color: var(--vp-navy); }
+.vg-empty p { font-size: 14px; color: var(--vp-muted); margin: 0 0 18px; line-height: 1.5; }
+.vg-empty-btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 10px; border: none;
+  background: var(--vp-navy); color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; }
+.vg-empty-btn:hover { background: #142f66; }
+.vg-empty-steps { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 14px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--vp-line); font-size: 12.5px; color: var(--vp-muted); }
+.vg-empty-steps b { display: inline-flex; width: 18px; height: 18px; border-radius: 50%; background: var(--vp-gold); color: #fff; font-size: 11px; align-items: center; justify-content: center; margin-right: 5px; }
+
+.vg-progress {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 40; width: min(440px, calc(100% - 40px));
+  background: #fff; border: 1px solid #DDE2EA; border-radius: 14px; padding: 20px 22px; box-shadow: 0 14px 40px rgba(11,37,86,.16);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1C2430;
+}
+.vg-progress-title { font-weight: 700; font-size: 16px; color: #0B2556; }
+.vg-progress-name { font-size: 12.5px; color: #5E6878; margin: 4px 0 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vg-progress-bar { height: 10px; background: #EEF1F5; border-radius: 6px; overflow: hidden; }
+.vg-progress-bar > span { display: block; height: 100%; background: linear-gradient(90deg, #0B2556, #2B4F96); border-radius: 6px; transition: width .2s ease; }
+.vg-progress-bar > span.is-indeterminate { animation: vg-indet 1.2s ease-in-out infinite; }
+@keyframes vg-indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+.vg-progress-meta { font-size: 12.5px; color: #5E6878; margin-top: 8px; font-variant-numeric: tabular-nums; }

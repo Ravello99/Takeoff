@@ -224,7 +224,7 @@ import { fmtCheckLen, parseLenInput, checkVerdict, M_PER_FT, areaVal, areaUnit, 
 import * as panelGeom from "../lib/panelGeometry.js";
 import { findWalls } from "../lib/findWalls";
 import { findScheduleOnPage } from "../lib/scheduleFinder";
-import { api as vanguardApi } from "../lib/vanguardApi.js";
+import { api as vanguardApi, onTransfer } from "../lib/vanguardApi.js";
 import ScheduleReader from "../components/vanguard/ScheduleReader.jsx";
 
 // Carpet roll width — a run reaching this needs a seam. The live cursor readout
@@ -371,6 +371,12 @@ export default function TakeoffCanvas() {
   const [sheetGroup, setSheetGroup] = useState([]);   // sheetKeys shown side-by-side; [] = single-sheet mode
   const [sheetLevels, setSheetLevels] = useState({}); // sheetKey → level label ("L1") — persisted (additive `sheet_levels` key); groups the gallery for multi-floor sets
   const [lastGroup, setLastGroup] = useState([]);     // most recent side-by-side composition — "Regroup" restores it
+  // plan-file uploads/downloads in flight (vanguardApi transfer events) → the progress card
+  const [transfers, setTransfers] = useState({});
+  useEffect(() => onTransfer((ev) => setTransfers((t) => {
+    if (ev.done) { const { [ev.id]: _gone, ...rest } = t; return rest; }
+    return { ...t, [ev.id]: { ...(t[ev.id] || {}), ...ev } };
+  })), []);
   const [schedOpen, setSchedOpen] = useState(false);   // AI tools → Read schedule (the project's own wall schedule → project assemblies)
   const [aiEnabled, setAiEnabled] = useState(false);
   const schedCacheRef = useRef(new Map());   // sheet key → { label, score, text, heading } — a page is searched once per session
@@ -10826,11 +10832,36 @@ export default function TakeoffCanvas() {
             </svg>
           </div>
 
+          {Object.keys(transfers).length > 0 && (() => {
+            const list = Object.values(transfers);
+            const loaded = list.reduce((n, t) => n + (t.loaded || 0), 0), total = list.reduce((n, t) => n + (t.total || 0), 0);
+            const pct = total ? Math.min(100, Math.round((loaded / total) * 100)) : null;
+            const up = list.some((t) => t.dir === "up");
+            const mb = (b) => (b / 1048576).toFixed(b < 10485760 ? 1 : 0);
+            return (
+              <div className="vg-progress" role="status" aria-live="polite">
+                <div className="vg-progress-title">{up ? "Uploading drawings" : "Loading drawings"}{list.length > 1 ? ` · ${list.length} files` : ""}</div>
+                <div className="vg-progress-name">{list.map((t) => t.name).filter(Boolean).join(", ")}</div>
+                <div className="vg-progress-bar"><span style={{ width: pct == null ? "35%" : `${pct}%` }} className={pct == null ? "is-indeterminate" : ""} /></div>
+                <div className="vg-progress-meta">{pct == null ? "Working…" : `${pct}% · ${mb(loaded)} of ${mb(total)} MB`}{up && pct === 100 ? " · saving on the server…" : ""}</div>
+              </div>
+            );
+          })()}
           {status !== "ready" && (
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink-muted)", fontSize: 15 }}>
               {status === "loading" && "Loading sheets…"}
               {status === "rendering" && "Rendering sheet…"}
-              {status === "empty" && "No PDFs yet — click “Open PDF” or drag a plan onto the canvas."}
+              {status === "empty" && !Object.keys(transfers).length && (
+                <div className="vg-empty" onPointerDown={(e) => e.stopPropagation()}>
+                  <img className="vg-empty-logo" src="/brand/logo.png" alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                  <h2>Add this project's drawings</h2>
+                  <p>Drag the plan set anywhere onto this page, or choose the files. PDFs, images and .zip plan sets all work — add more files any time with <strong>Open</strong>.</p>
+                  <button type="button" className="vg-empty-btn" onClick={() => fileInputRef.current?.click()}><Icon name="plus" size={16} />Choose drawing files</button>
+                  <div className="vg-empty-steps">
+                    <span><b>1</b> Add drawings</span><span><b>2</b> Set the scale</span><span><b>3</b> AI tools → Read schedule</span><span><b>4</b> Measure or Find walls</span>
+                  </div>
+                </div>
+              )}
               {status === "error" && <span style={{ color: "var(--c-danger)" }}>Error: {err}</span>}
             </div>
           )}

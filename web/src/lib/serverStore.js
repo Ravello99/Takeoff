@@ -5,7 +5,7 @@
 // project on the server; condition/material/stamp libraries are shared by
 // the whole company. Snapshots stay in this browser, scoped to the project
 // (the same choice the Google Drive store makes).
-import { api, ApiError, enc } from "./vanguardApi.js";
+import { api, ApiError, enc, transfer } from "./vanguardApi.js";
 import { localStore, emptyAnnotations } from "./store.js";
 import { sanitizeTemplates } from "./templates.js";
 import { sanitizeMaterialLibrary } from "./materials.js";
@@ -56,7 +56,7 @@ export function createServerStore(projectId, { projectName = "" } = {}) {
     async loadPdfData(name) {
       let p = bytes.get(name);
       if (!p) {
-        p = api("GET", `${base}/pdfs/${enc(name)}`);
+        p = transfer("GET", `${base}/pdfs/${enc(name)}`, { name });
         bytes.set(name, p);
         p.catch(() => { if (bytes.get(name) === p) bytes.delete(name); });
       }
@@ -65,7 +65,7 @@ export function createServerStore(projectId, { projectName = "" } = {}) {
     },
     async addPdf(file) {
       const buf = await file.arrayBuffer();
-      const out = await api("PUT", `${base}/pdfs/${enc(file.name)}`, { raw: buf });
+      const out = await transfer("PUT", `${base}/pdfs/${enc(file.name)}`, { raw: buf, name: file.name });
       bytes.set(file.name, Promise.resolve(buf));
       if (meta) meta.set(file.name, { name: file.name, hash: out.hash, rev: out.rev, size: buf.byteLength });
       const { hash: _h, ...result } = out;
