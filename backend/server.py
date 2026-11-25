@@ -67,6 +67,22 @@ The schedule below was extracted from the drawing's text layer: the table layout
 wall type usually appears as its title line, its mark on its own line, then its layers as bullet lines.
 Metric sizes are fine (e.g. 92mm studs at 400mm o.c. -> stud_size "92mm", stud_oc 16; 600mm o.c. -> 24).
 Include exterior wall types too; skip roof, floor and ceiling assemblies."""
+NOTES_PROMPT = """You are helping a commercial DRYWALL contractor decide its scope from construction drawing notes.
+The text below is the notes, legends and keynotes from the drawings (table layout is lost).
+Answer ONLY with one JSON object, no prose, no markdown:
+{"existing_walls_in_scope": "yes" | "no" | "unclear",
+ "reason": "one sentence quoting or paraphrasing the note that decides it",
+ "existing_style": "how the legend says existing walls are drawn (e.g. 'screened/grey', 'hatched', 'dashed'), or \"\"",
+ "notes": [
+   {"mark": "keynote number/letter exactly as shown, or \"\" for a general note",
+    "text": "the note, shortened to one line",
+    "action": "fur_existing" | "patch_repair" | "new_board_on_existing" | "include_existing" | "exclude" | "demo" | "new_work" | "info",
+    "applies_to": "what it applies to (e.g. 'existing exterior walls', 'columns')",
+    "rooms": ["room names or numbers the note names, exactly as written"],
+    "wall_type": "wall type tag the note calls for (e.g. 'F1', 'WP-2'), or \"\""}]}
+List only notes that change what drywall work is done to WALLS: work on existing walls (furring, patching,
+new board, skim), existing walls excluded or by others, demolition, or new walls the plan doesn't tag.
+Skip notes about doors, MEP, flooring, millwork and general conditions. Do not invent notes."""
 EMAIL_KEYS = ("smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from", "public_url")
 INVITE_DAYS = 7
 MAX_JSON = 64 * 1024 * 1024        # takeoff payload / library JSON
@@ -307,6 +323,20 @@ def extract_json_array(text: str):
     except json.JSONDecodeError:
         return None
     return v if isinstance(v, list) else None
+
+
+def extract_json_object(text: str):
+    """Pull the JSON object out of a model reply (tolerates fences and chatter)."""
+    t = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t, flags=re.S)
+    start, end = t.find("{"), t.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        v = json.loads(t[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    return v if isinstance(v, dict) else None
 
 
 def mail_html(heading: str, body: str, button: str, url: str) -> str:
@@ -731,6 +761,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"ok": True, "models": [m_["id"] for m_ in models]})
         if p == ["ai", "read-schedule"] and m == "POST":
             return self.ai_read_schedule(c, me)
+        if p == ["ai", "read-notes"] and m == "POST":
+            return self.ai_read_notes(c, me)
         if p == ["ai", "feedback"] and m == "POST":
             body = self.read_json()
             log_id = int(body.get("log_id") or 0)
@@ -958,6 +990,54 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": [], "raw": text[:2000],
                                         "error": "The AI answered, but not with a list of wall types. Try a tighter crop of just the schedule."})
         return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": walls})
+
+    def ai_read_notes(self, c, me):
+        """Drawing notes/legends/keynotes (text) → which walls are in scope, as JSON.
+        Logged in ai_log (kind "notes") like schedule reads: training data."""
+        cfg = get_settings(c)
+        if not ai_ready(cfg):
+            raise ApiError(400, "AI isn't connected yet. An admin can add it on the Team page.")
+        body = self.read_json()
+        text = str(body.get("text") or "").strip()[:24000]
+        if len(text) < 20:
+            raise ApiError(400, "No notes text to read.")
+        source = str(body.get("source") or "").strip()[:300]
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        dest = self.app.blob_path(digest)
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(text.encode("utf-8"))
+        model = ai_model(cfg)
+        ctx = ai_context_len(cfg, model)
+        budget = answer_budget(ctx, len(NOTES_PROMPT) + len(text), False, want=3000)
+        if ctx and budget < 800:
+            raise ApiError(400, f"The AI's context window ({ctx} tokens) is too small for these notes. Raise --max-model-len on the Pod.")
+        t0 = time.time()
+        out = ai_request(cfg, "/chat/completions", {
+            "model": model, "temperature": 0, "max_tokens": budget,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "messages": [{"role": "user", "content": NOTES_PROMPT + f"\n\nNOTES TEXT{f' (from {source})' if source else ''}:\n{text}"}],
+        })
+        ms = int((time.time() - t0) * 1000)
+        reply = ((out.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        if isinstance(reply, list):
+            reply = "".join(part.get("text", "") for part in reply if isinstance(part, dict))
+        result = extract_json_object(reply)
+        cur = c.execute("INSERT INTO ai_log (kind, user_id, image_hash, model, raw, result, ms, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                        ("notes", me["id"], digest, model, reply, json.dumps(result) if result is not None else None, ms, time.time()))
+        if result is None:
+            return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "result": None,
+                                        "error": "The AI answered, but not in the expected form. Try again."})
+        notes = [n for n in (result.get("notes") or []) if isinstance(n, dict)][:60]
+        clean = {
+            "existing_walls_in_scope": str(result.get("existing_walls_in_scope") or "unclear").lower(),
+            "reason": str(result.get("reason") or "")[:400],
+            "existing_style": str(result.get("existing_style") or "")[:120],
+            "notes": [{"mark": str(n.get("mark") or "")[:8], "text": str(n.get("text") or "")[:300], "action": str(n.get("action") or "info"),
+                       "applies_to": str(n.get("applies_to") or "")[:160], "rooms": [str(r)[:60] for r in (n.get("rooms") or []) if r][:12],
+                       "wall_type": str(n.get("wall_type") or "")[:20]} for n in notes],
+        }
+        return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "result": clean})
 
     def wall_decisions(self, c, me):
         """Find walls reviews → training rows: every run the estimator kept (y=1)

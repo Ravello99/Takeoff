@@ -49,6 +49,7 @@ export interface FoundWall {
   tagSource: TagSource | null;
   confidence: number;               // 0–1
   features: number[];               // FEATURE_NAMES order — the wall checker's input
+  existing: boolean;                // drawn in a screened (lighter) wall pen: likely existing, outside scope unless a note says so
 }
 
 export interface FindWallsResult {
@@ -79,7 +80,9 @@ export const FEATURE_NAMES = [
   "thick_in", "log_len_ft", "off_axis_deg", "main_pen", "pen_width_rel", "pen_lum", "hatch_per_ft",
   "tag_leader", "tag_near", "tag_run", "tag_thickness", "tag_none",
   "junctions", "free_ends", "text_near", "pos_x", "pos_y", "parallel_runs", "thick_vs_tag_in", "thick_share",
+  "existing_pen",
 ] as const;
+export const EXISTING_LUM_GAP = 50;   // a wall pen this much lighter (0–255) than the darkest is screened: existing
 export const FEATURE_VERSION = 1;
 export const TAG_RE = /^[A-Z]{1,3}-?\d{1,2}[A-Z]?$/;
 
@@ -353,6 +356,56 @@ function hatchTester(inp: FindWallsInput, ppf: number) {
   return Object.assign(test, { count });
 }
 
+/** Leader following, shared by wall tags and note marks: from a mark (a bit of
+ *  text), the stroke that leaves its bubble radially — with one elbow — and
+ *  where it ends. null when the mark has no leader. */
+export function makeLeaderFinder(segs: ArrayLike<number>, meta: ArrayLike<number> | null | undefined, ppf: number) {
+  const nSeg = Math.floor(segs.length / 4);
+  const cell = Math.max(8, ppf);
+  const grid = new Map<string, number[]>();
+  for (let i = 0; i < nSeg; i++) {
+    if (meta && (meta[i] & SEG_CLIP)) continue;
+    for (const e of [0, 1]) {
+      const k = `${Math.floor(segs[4 * i + 2 * e] / cell)},${Math.floor(segs[4 * i + 2 * e + 1] / cell)}`;
+      let a = grid.get(k); if (!a) grid.set(k, (a = [])); a.push(2 * i + e);
+    }
+  }
+  const endsNear = (x: number, y: number, r: number): number[] => {
+    const out: number[] = [];
+    const c0 = Math.floor((x - r) / cell), c1 = Math.floor((x + r) / cell), d0 = Math.floor((y - r) / cell), d1 = Math.floor((y + r) / cell);
+    for (let cx = c0; cx <= c1; cx++) for (let cy = d0; cy <= d1; cy++) for (const code of grid.get(`${cx},${cy}`) || []) {
+      const i = code >> 1, e = code & 1;
+      if (Math.hypot(segs[4 * i + 2 * e] - x, segs[4 * i + 2 * e + 1] - y) <= r) out.push(code);
+    }
+    return out;
+  };
+  return (mk: { x: number; y: number; h: number }): Pt | null => {
+    const rIn = mk.h * 0.4, rOut = mk.h * 3.2;
+    let tip: Pt | null = null, tipLen = 0;
+    for (const code of endsNear(mk.x, mk.y, rOut)) {
+      const i = code >> 1, e = code & 1;
+      const sx = segs[4 * i + 2 * e], sy = segs[4 * i + 2 * e + 1];
+      const fx = segs[4 * i + 2 * (1 - e)], fy = segs[4 * i + 2 * (1 - e) + 1];
+      const r0 = Math.hypot(sx - mk.x, sy - mk.y), r1 = Math.hypot(fx - mk.x, fy - mk.y);
+      if (r0 < rIn || r1 <= rOut) continue;
+      const L = Math.hypot(fx - sx, fy - sy);
+      if (L < mk.h * 1.2) continue;
+      const radial = ((fx - sx) * (sx - mk.x) + (fy - sy) * (sy - mk.y)) / (L * (r0 || 1));
+      if (radial < 0.85) continue;
+      let end: Pt = [fx, fy], total = L;
+      for (const c2 of endsNear(fx, fy, 1.5)) {
+        const j = c2 >> 1; if (j === i) continue;
+        const e2 = c2 & 1;
+        const gx = segs[4 * j + 2 * (1 - e2)], gy = segs[4 * j + 2 * (1 - e2) + 1];
+        const L2 = Math.hypot(gx - fx, gy - fy);
+        if (L2 > mk.h && Math.hypot(gx - mk.x, gy - mk.y) > r1) { end = [gx, gy]; total += L2; break; }
+      }
+      if (total > tipLen) { tipLen = total; tip = end; }
+    }
+    return tip;
+  };
+}
+
 function median(a: number[]): number { if (!a.length) return 0; const s = [...a].sort((p, q) => p - q); return s[s.length >> 1]; }
 
 export function findWalls(inp: FindWallsInput): FindWallsResult {
@@ -448,28 +501,7 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
     for (let k = marks.length - 1; k >= 0; k--) if (!marks[k].known && (cnt.get(marks[k].tag) || 0) < 2) marks.splice(k, 1);
   }
 
-  // spatial hash of all straight segment endpoints, for leader following
-  const segs = inp.segs, nSeg = Math.floor(segs.length / 4);
-  const cell = Math.max(8, ppf);
-  const grid = new Map<string, number[]>();
-  const gk = (x: number, y: number) => `${Math.floor(x / cell)},${Math.floor(y / cell)}`;
-  const addEnd = (x: number, y: number, code: number) => { const k = gk(x, y); let a = grid.get(k); if (!a) grid.set(k, (a = [])); a.push(code); };
-  if (marks.length) for (let i = 0; i < nSeg; i++) {
-    const m = inp.meta ? inp.meta[i] : 0;
-    if (m & SEG_CLIP) continue;
-    addEnd(segs[4 * i], segs[4 * i + 1], 2 * i);
-    addEnd(segs[4 * i + 2], segs[4 * i + 3], 2 * i + 1);
-  }
-  const endsNear = (x: number, y: number, r: number): number[] => {
-    const out: number[] = [];
-    const c0 = Math.floor((x - r) / cell), c1 = Math.floor((x + r) / cell), d0 = Math.floor((y - r) / cell), d1 = Math.floor((y + r) / cell);
-    for (let cx = c0; cx <= c1; cx++) for (let cy = d0; cy <= d1; cy++) for (const code of grid.get(`${cx},${cy}`) || []) {
-      const i = code >> 1, e = code & 1;
-      const ex = segs[4 * i + 2 * e], ey = segs[4 * i + 2 * e + 1];
-      if (Math.hypot(ex - x, ey - y) <= r) out.push(code);
-    }
-    return out;
-  };
+  const leaderTip = marks.length ? makeLeaderFinder(inp.segs, inp.meta, ppf) : null;
   const nearestWall = (x: number, y: number, maxD: number): number => {
     let bi = -1, bd = maxD;
     raw.forEach((w, k) => {
@@ -484,29 +516,7 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
   const tagMarks: FindWallsResult["tagMarks"] = [];
   for (const mk of marks) {
     // leader: a stroke leaving the tag's bubble radially, possibly with one elbow
-    const rIn = mk.h * 0.4, rOut = mk.h * 3.2;
-    let tip: Pt | null = null, tipLen = 0;
-    for (const code of endsNear(mk.x, mk.y, rOut)) {
-      const i = code >> 1, e = code & 1;
-      const sx = segs[4 * i + 2 * e], sy = segs[4 * i + 2 * e + 1];
-      const fx = segs[4 * i + 2 * (1 - e)], fy = segs[4 * i + 2 * (1 - e) + 1];
-      const r0 = Math.hypot(sx - mk.x, sy - mk.y), r1 = Math.hypot(fx - mk.x, fy - mk.y);
-      if (r0 < rIn || r1 <= rOut) continue;
-      const L = Math.hypot(fx - sx, fy - sy);
-      if (L < mk.h * 1.2) continue;
-      const radial = ((fx - sx) * (sx - mk.x) + (fy - sy) * (sy - mk.y)) / (L * (r0 || 1));
-      if (radial < 0.85) continue;
-      let end: Pt = [fx, fy], total = L;
-      // follow one elbow
-      for (const c2 of endsNear(fx, fy, 1.5)) {
-        const j = c2 >> 1; if (j === i) continue;
-        const e2 = c2 & 1;
-        const gx = segs[4 * j + 2 * (1 - e2)], gy = segs[4 * j + 2 * (1 - e2) + 1];
-        const L2 = Math.hypot(gx - fx, gy - fy);
-        if (L2 > mk.h && Math.hypot(gx - mk.x, gy - mk.y) > r1) { end = [gx, gy]; total += L2; break; }
-      }
-      if (total > tipLen) { tipLen = total; tip = end; }
-    }
+    const tip = leaderTip ? leaderTip(mk) : null;
     let wi = -1, via: TagSource | null = null;
     if (tip) { wi = nearestWall(tip[0], tip[1], 0.75 * ppf); if (wi >= 0) via = "leader"; }
     if (wi < 0) { wi = nearestWall(mk.x, mk.y, NEAR_TAG_FT * ppf); if (wi >= 0) via = "near"; }
@@ -617,6 +627,13 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
     ];
   });
 
+  // existing walls: offices screen them — a wall pen clearly lighter than the
+  // sheet's darkest wall pen. A guess the review panel shows as its own group.
+  const lums = raw.map((w) => w.pl);
+  const darkest = lums.length ? Math.min(...lums) : 0;
+  const existing = raw.map((w) => w.pl >= darkest + EXISTING_LUM_GAP);
+  features.forEach((f, k) => f.push(existing[k] ? 1 : 0));
+
   const CONF: Record<TagSource, number> = { leader: 0.95, near: 0.8, run: 0.75, thickness: 0.55 };
   const walls: FoundWall[] = raw.map((w, k) => ({
     id: k,
@@ -627,6 +644,7 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
     tag: tagOf[k], tagSource: source[k],
     confidence: source[k] ? CONF[source[k] as TagSource] : 0.3,
     features: features[k],
+    existing: existing[k],
   }));
 
   const tagAgg = new Map<string, { count: number; lengthFt: number; th: number[] }>();

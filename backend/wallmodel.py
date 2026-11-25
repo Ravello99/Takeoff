@@ -22,6 +22,7 @@ FEATURE_NAMES = [
     "thick_in", "log_len_ft", "off_axis_deg", "main_pen", "pen_width_rel", "pen_lum", "hatch_per_ft",
     "tag_leader", "tag_near", "tag_run", "tag_thickness", "tag_none",
     "junctions", "free_ends", "text_near", "pos_x", "pos_y", "parallel_runs", "thick_vs_tag_in", "thick_share",
+    "existing_pen",
 ]
 FEATURE_VERSION = 1
 MIN_ROWS = 40            # fewer reviews than this can't teach anything yet

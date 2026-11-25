@@ -224,6 +224,13 @@ import { fmtCheckLen, parseLenInput, checkVerdict, M_PER_FT, areaVal, areaUnit, 
 import * as panelGeom from "../lib/panelGeometry.js";
 import { findWalls, FEATURE_NAMES, FEATURE_VERSION } from "../lib/findWalls";
 import { scoreRun, isWallModel, featureIndexMap, DROP_BELOW, DOUBT_BELOW } from "../lib/wallModel";
+import { notesText, notesScore, locateNotes } from "../lib/notesFinder";
+
+// Find walls review groups: a scope note's walls, screened (existing) walls, or a plan tag
+const wfKey = (w) => w.noteKey || (w.existing && !w.inScope ? "§EX" : (w.tag || "?"));
+const wfLabel = (key, wf) => (key === "?" ? "Untagged" : key === "§EX" ? "Existing" : key.startsWith("§N") ? (wf?.noteLabels?.[key] || "Noted") : key);
+const NOTE_INCLUDE = new Set(["fur_existing", "patch_repair", "new_board_on_existing", "include_existing", "new_work"]);
+const NOTE_EXCLUDE = new Set(["exclude", "demo"]);
 import { findScheduleOnPage } from "../lib/scheduleFinder";
 import { api as vanguardApi, onTransfer } from "../lib/vanguardApi.js";
 import ScheduleReader from "../components/vanguard/ScheduleReader.jsx";
@@ -5140,9 +5147,9 @@ export default function TakeoffCanvas() {
     }
     const byTag = new Map(conditions.filter((c) => c.finish_tag).map((c) => [c.finish_tag.trim().toUpperCase(), c.id]));
     const map = {};
-    for (const w of res.walls) { const t = w.tag || "?"; if (!(t in map)) map[t] = t === "?" ? "" : (byTag.get(t) || ""); }
+    for (const w of res.walls) { const t = wfKey(w); if (!(t in map)) map[t] = t === "?" || t === "§EX" ? "" : (byTag.get(t) || ""); }
     const lfByTag = new Map();
-    for (const w of res.walls) lfByTag.set(w.tag || "?", (lfByTag.get(w.tag || "?") || 0) + w.lengthFt);
+    for (const w of res.walls) lfByTag.set(wfKey(w), (lfByTag.get(wfKey(w)) || 0) + w.lengthFt);
     const colors = {};
     [...lfByTag.keys()].sort((a, b) => (a === "?") - (b === "?") || lfByTag.get(b) - lfByTag.get(a))
       .forEach((t, i) => { colors[t] = WALL_REVIEW_COLORS[i % WALL_REVIEW_COLORS.length]; });
@@ -5152,13 +5159,94 @@ export default function TakeoffCanvas() {
   const wallFindGroups = (wf) => {
     const g = new Map();
     for (const w of wf.walls) {
-      const t = w.tag || "?";
+      const t = wfKey(w);
       let a = g.get(t); if (!a) g.set(t, (a = { tag: t, n: 0, lf: 0, thick: [] }));
       if (wf.off.has(w.id)) continue;
       a.n++; a.lf += w.lengthFt; a.thick.push(w.thickIn);
     }
-    return [...g.values()].sort((p, q) => (p.tag === "?") - (q.tag === "?") || q.lf - p.lf);
+    const rank = (t) => (t.startsWith("§N") ? 0 : t === "§EX" ? 2 : t === "?" ? 3 : 1);
+    return [...g.values()].sort((p, q) => rank(p.tag) - rank(q.tag) || q.lf - p.lf);
   };
+
+  // ── Find walls: scope from the notes ─────────────────────────────────────
+  // The AI reads this sheet's notes / legend / keynotes (and the set's general-
+  // notes sheets) for what puts existing walls in scope or takes walls out; each
+  // note's keynote mark or room is then found on the plan and its walls become a
+  // highlighted group in the review.
+  const notesCacheRef = useRef(new Map());   // sheet key → { score, text, label }
+  async function checkScopeNotes() {
+    const wf = wallFind;
+    if (!wf) return;
+    if (!aiEnabled) { setCommitMsg("Connect your AI first — an admin can add it under Team → AI settings."); return; }
+    const tp = panelByKey(wf.key), upp = uppFor(wf.key);
+    setWallFind((cur) => cur && { ...cur, scope: { status: "reading", progress: "collecting notes…" } });
+    const toToks = (spans) => spans.map((sp) => ({ str: sp.str, x: sp.x0, y: sp.y1, h: Math.max(1, sp.y1 - sp.y0), w: sp.x1 - sp.x0 }));
+    try {
+      const spans = await ensureTextSpans(wf.key);
+      const parts = [];
+      const own = notesText(toToks(spans), 6000);
+      if (own) parts.push(`[THIS SHEET — ${currentSheetLabel()}]\n${own}`);
+      // the set's general-notes sheets (cached per session)
+      const cands = [];
+      for (const sh of sheets) {
+        let pdf; try { pdf = await docFor(sh.name); } catch { continue; }
+        for (let pg = 1; pg <= (pdf.numPages || 1); pg++) {
+          const key = pg > 1 ? `${sh.name}#${pg}` : sh.name;
+          if (key === wf.key) continue;
+          let hit = notesCacheRef.current.get(key);
+          if (!hit) {
+            try {
+              const page = await pdf.getPage(pg);
+              const vp = page.getViewport({ scale: 1 });
+              const tc = await page.getTextContent();
+              const toks = pageRuns(tc, vp);
+              const score = notesScore(toks);
+              hit = { score, text: score >= 25 ? notesText(toks, 4000) : "", label: extractSheetNumber(tc, vp) || `${sh.name} p${pg}` };
+            } catch { hit = { score: 0, text: "", label: key }; }
+            notesCacheRef.current.set(key, hit);
+            setWallFind((cur) => cur && { ...cur, scope: { status: "reading", progress: `checking sheet ${notesCacheRef.current.size}…` } });
+          }
+          if (hit.text) cands.push(hit);
+        }
+      }
+      for (const c of cands.sort((a, b) => b.score - a.score).slice(0, 2)) parts.push(`[${c.label}]\n${c.text}`);
+      const text = parts.join("\n\n").slice(0, 14000);
+      if (text.length < 40) { setWallFind((cur) => cur && { ...cur, scope: { status: "done", none: true } }); return; }
+      setWallFind((cur) => cur && { ...cur, scope: { status: "reading", progress: "the AI is reading the notes…" } });
+      const r = await vanguardApi("POST", "/api/ai/read-notes", { json: { text, source: currentSheetLabel() } });
+      if (!r.result) throw new Error(r.error || "The AI didn't answer in the expected form.");
+      const res = r.result;
+      const located = locateNotes({ segs: vectorSegsRef.current.get(wf.key) || [], meta: segMetaRef.current.get(wf.key), texts: spans, pxPerFt: upp ? 1 / upp : 18 }, wf.walls, res.notes);
+      const byTag = new Map(conditions.filter((c) => c.finish_tag).map((c) => [c.finish_tag.trim().toUpperCase(), c.id]));
+      setWallFind((cur) => {
+        if (!cur) return cur;
+        const walls = cur.walls.map((w) => ({ ...w }));
+        const byId = new Map(walls.map((w) => [w.id, w]));
+        const map = { ...cur.map }, colors = { ...cur.colors }, noteLabels = { ...(cur.noteLabels || {}) };
+        const off = new Set(cur.off), auto = new Set(cur.auto || []);
+        let ci = Object.keys(colors).length;
+        const found = res.notes.map((n, i) => {
+          const ids = located[i]?.walls || [];
+          if (!ids.length) return { ...n, walls: 0, marks: located[i]?.marks || 0 };
+          if (NOTE_INCLUDE.has(n.action)) {
+            const key = `§N${i}`;
+            noteLabels[key] = `${n.mark ? `Note ${n.mark}` : "Note"}: ${n.text}`.slice(0, 80);
+            for (const id of ids) { const w = byId.get(id); if (w) { w.noteKey = key; w.inScope = true; off.delete(id); auto.delete(id); } }
+            const first = byId.get(ids[0]);
+            map[key] = byTag.get(String(n.wall_type || "").trim().toUpperCase()) || (first?.tag ? cur.map[first.tag] || byTag.get(first.tag) : "") || "";
+            colors[key] = colors[key] || WALL_REVIEW_COLORS[ci++ % WALL_REVIEW_COLORS.length];
+          } else if (NOTE_EXCLUDE.has(n.action)) {
+            for (const id of ids) { off.add(id); auto.add(id); }
+          }
+          return { ...n, walls: ids.length, marks: located[i]?.marks || 0 };
+        });
+        if (!colors["§EX"]) colors["§EX"] = WALL_REVIEW_COLORS[ci++ % WALL_REVIEW_COLORS.length];
+        return { ...cur, walls, map, colors, noteLabels, off, auto, scope: { status: "done", ...res, found } };
+      });
+    } catch (e) {
+      setWallFind((cur) => cur && { ...cur, scope: { status: "error", error: String(e?.message || e) } });
+    }
+  }
   // a press on a suggested run toggles it in/out of the batch
   function wallFindHit(p, e) {
     if (!wallFind) return false;
@@ -5230,7 +5318,7 @@ export default function TakeoffCanvas() {
     const made = [], noHeight = new Set();
     for (const w of wf.walls) {
       if (wf.off.has(w.id)) continue;
-      const condId = wf.map[w.tag || "?"];
+      const condId = wf.map[wfKey(w)];
       if (!condId) continue;
       const cond = condById[condId];
       const h = Number(cond?.height_ft) || 0;
@@ -5251,7 +5339,7 @@ export default function TakeoffCanvas() {
     // tag was skipped as out of scope is still a wall — neither is sent.
     const rows = [];
     for (const w of wf.walls) {
-      const isOff = wf.off.has(w.id), mapped = !!wf.map[w.tag || "?"];
+      const isOff = wf.off.has(w.id), mapped = !!wf.map[wfKey(w)];
       if (isOff && (!wf.auto?.has(w.id) || wf.touched?.has(w.id))) rows.push({ f: w.features, y: 0, p: w.score ?? null, tag: w.tag });
       else if (!isOff && mapped) rows.push({ f: w.features, y: 1, p: w.score ?? null, tag: w.tag });
     }
@@ -10555,19 +10643,19 @@ export default function TakeoffCanvas() {
                       <g data-find-walls>
                         {wallFind.walls.map((w) => {
                           const off = wallFind.off.has(w.id);
-                          const cid = wallFind.map[w.tag || "?"];
+                          const cid = wallFind.map[wfKey(w)];
                           // tag colour while it will be added; grey when dropped or its tag is skipped
-                          const col = off || !cid ? "#8a8a8a" : (wallFind.colors?.[w.tag || "?"] || "#1f3fc7");
-                          return <line key={"fw" + w.id} x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke={col}
+                          const col = off || !cid ? "#8a8a8a" : (wallFind.colors?.[wfKey(w)] || "#1f3fc7");
+                          return <g key={"fw" + w.id}>{w.noteKey && !off && <line x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke="#ffd400" strokeOpacity={0.55} strokeWidth={Math.max(w.thickPx, 3 / tf.scale) + 10 / tf.scale} strokeLinecap="round" />}<line x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke={col}
                             strokeOpacity={off ? 0.35 : !cid ? 0.4 : w.tagSource === "thickness" || !w.tag ? 0.6 : 0.85}
                             strokeWidth={Math.max(w.thickPx, 3 / tf.scale)} strokeDasharray={off ? `${4 / tf.scale} ${4 / tf.scale}` : (w.score != null && w.score < DOUBT_BELOW ? `${10 / tf.scale} ${3 / tf.scale}` : undefined)}>
-                            <title>{`${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${w.score != null ? ` · wall checker ${Math.round(w.score * 100)}%` : ""}${off ? (wallFind.auto?.has(w.id) && !wallFind.touched?.has(w.id) ? " · dropped by the checker (click to restore)" : " · dropped") : ""}`}</title>
-                          </line>;
+                            <title>{`${w.noteKey ? `${wfLabel(w.noteKey, wallFind)} · ` : ""}${w.existing ? "existing (screened pen) · " : ""}${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${w.score != null ? ` · wall checker ${Math.round(w.score * 100)}%` : ""}${off ? (wallFind.auto?.has(w.id) && !wallFind.touched?.has(w.id) ? " · dropped by the checker (click to restore)" : " · dropped") : ""}`}</title>
+                          </line></g>;
                         })}
                         {/* end handles: drag to stretch or trim a run (⇧ moves the end freely) */}
-                        {wallFind.walls.filter((w) => !wallFind.off.has(w.id) && wallFind.map[w.tag || "?"]).flatMap((w) => ["a", "b"].map((end) => (
+                        {wallFind.walls.filter((w) => !wallFind.off.has(w.id) && wallFind.map[wfKey(w)]).flatMap((w) => ["a", "b"].map((end) => (
                           <circle key={`fwh${w.id}${end}`} cx={w[end][0]} cy={w[end][1]} r={3.6 / tf.scale}
-                            fill="#fff" stroke={wallFind.colors?.[w.tag || "?"] || "#1f3fc7"} strokeWidth={1.6 / tf.scale} style={{ cursor: "move" }} />
+                            fill="#fff" stroke={wallFind.colors?.[wfKey(w)] || "#1f3fc7"} strokeWidth={1.6 / tf.scale} style={{ cursor: "move" }} />
                         )))}
                       </g>
                     )}
@@ -11099,7 +11187,7 @@ export default function TakeoffCanvas() {
         {wallFind && (() => {
           const groups = wallFindGroups(wallFind);
           const opts = [...conditions].sort((a, b) => (b.measure === "wall") - (a.measure === "wall") || String(a.finish_tag).localeCompare(String(b.finish_tag)));
-          const n = wallFind.walls.filter((w) => !wallFind.off.has(w.id) && wallFind.map[w.tag || "?"]).length;
+          const n = wallFind.walls.filter((w) => !wallFind.off.has(w.id) && wallFind.map[wfKey(w)]).length;
           return (
             <div data-find-walls-panel style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 300, maxHeight: "60%", overflowY: "auto", padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5 }}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6 }}>Find walls — review</div>
@@ -11109,13 +11197,37 @@ export default function TakeoffCanvas() {
                   ? <>Wall checker (learned from {wallFind.checker.n} reviews{wallFind.checker.offline ? ", offline copy" : ""}): dropped <b>{wallFind.checker.dropped}</b> likely non-walls (grey dashes — click to restore); <b>{wallFind.checker.doubtful}</b> doubtful runs are drawn dashed.</>
                   : <>The wall checker is still learning{wallFind.checker?.decisions ? ` (${wallFind.checker.decisions} reviews so far)` : ""}. Every run you keep or drop here teaches it.</>}
               </div>
+              {(() => {
+                const sc = wallFind.scope;
+                const nEx = wallFind.walls.filter((w) => w.existing && !w.inScope).length;
+                return (
+                  <div style={{ fontSize: 11.5, marginBottom: 8, padding: "6px 8px", border: "1px solid var(--ink-faint)", background: "#fffbe6" }}>
+                    {nEx > 0 && <div style={{ marginBottom: 4 }}><b>{nEx}</b> runs are drawn in a lighter (screened) pen — likely <b>existing</b>, grouped as “Existing” and skipped unless you pick an assembly.</div>}
+                    {!sc && <button type="button" onClick={checkScopeNotes} style={{ padding: "4px 8px", border: "1px solid var(--ink-faint)", background: "#fff", cursor: "pointer", fontWeight: 600 }}>✨ Check the notes for scope</button>}
+                    {!sc && <span style={{ color: "var(--ink-muted)" }}> — the AI reads the notes, legend and keynotes for existing walls you do work on (fur out, patch, new board) and highlights them.</span>}
+                    {sc?.status === "reading" && <span>Reading the notes… <span style={{ color: "var(--ink-muted)" }}>{sc.progress}</span></span>}
+                    {sc?.status === "error" && <span style={{ color: "var(--c-danger)" }}>{sc.error} <button type="button" onClick={checkScopeNotes}>Try again</button></span>}
+                    {sc?.status === "done" && sc.none && <span>No scope notes found in this set's text.</span>}
+                    {sc?.status === "done" && !sc.none && (<>
+                      <div><b>Existing walls in scope: {sc.existing_walls_in_scope === "yes" ? "yes" : sc.existing_walls_in_scope === "no" ? "no" : "unclear"}</b>{sc.reason ? ` — ${sc.reason}` : ""}</div>
+                      {(sc.found || []).filter((n) => n.action !== "info").map((n, i) => (
+                        <div key={i} style={{ marginTop: 3 }}>
+                          <span style={{ fontWeight: 600 }}>{n.mark ? `Note ${n.mark}` : "Note"}</span>: {n.text}
+                          <span style={{ color: n.walls ? "var(--c-positive)" : "var(--ink-muted)" }}> · {n.walls ? `${NOTE_EXCLUDE.has(n.action) ? "dropped" : "highlighted"} ${n.walls} run${n.walls === 1 ? "" : "s"}` : n.marks ? "mark found, no wall next to it" : "not located on this sheet"}</span>
+                        </div>
+                      ))}
+                      {!(sc.found || []).some((n) => n.action !== "info") && <div style={{ color: "var(--ink-muted)" }}>No notes that change wall scope.</div>}
+                    </>)}
+                  </div>
+                );
+              })()}
               {groups.map((g) => (
                 <div key={g.tag} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                   <span aria-hidden title={wallFind.map[g.tag] ? "Colour on the plan" : "Skipped — shown grey on the plan"}
                     style={{ width: 14, height: 14, flex: "0 0 14px", borderRadius: 3, background: wallFind.map[g.tag] ? (wallFind.colors?.[g.tag] || "#1f3fc7") : "transparent", border: `2px solid ${wallFind.colors?.[g.tag] || "#8a8a8a"}`, opacity: wallFind.map[g.tag] ? 1 : 0.5 }} />
-                  <span style={{ minWidth: 54, fontWeight: 700 }}>{g.tag === "?" ? "Untagged" : g.tag}</span>
+                  <span title={wfLabel(g.tag, wallFind)} style={{ minWidth: 54, maxWidth: 110, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...(g.tag.startsWith("§N") ? { background: "#fff3b0", padding: "0 3px" } : {}) }}>{wfLabel(g.tag, wallFind)}</span>
                   <span style={{ minWidth: 70, color: "var(--ink-secondary)", fontVariantNumeric: "tabular-nums" }}>{g.n} · {fl(g.lf, 0)}</span>
-                  <select aria-label={`Assembly for ${g.tag}`} value={wallFind.map[g.tag] || ""} onChange={(e) => { const v = e.target.value; setWallFind((wf) => ({ ...wf, map: { ...wf.map, [g.tag]: v } })); }} style={{ flex: 1, minWidth: 0 }}>
+                  <select aria-label={`Assembly for ${wfLabel(g.tag, wallFind)}`} value={wallFind.map[g.tag] || ""} onChange={(e) => { const v = e.target.value; setWallFind((wf) => ({ ...wf, map: { ...wf.map, [g.tag]: v } })); }} style={{ flex: 1, minWidth: 0 }}>
                     <option value="">Skip</option>
                     {opts.map((c) => <option key={c.id} value={c.id}>{c.finish_tag}{c.label ? ` — ${c.label}` : ""}</option>)}
                   </select>
