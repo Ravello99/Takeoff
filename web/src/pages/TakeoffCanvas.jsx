@@ -228,7 +228,7 @@ import { notesText, notesScore, locateNotes } from "../lib/notesFinder";
 import { legendSamples, matchWallStyles } from "../lib/legendStyles";
 
 // Find walls review groups: a scope note's walls, screened (existing) walls, or a plan tag
-const wfKey = (w) => w.noteKey || (w.existing && !w.inScope ? "§EX" : (w.tag || "?"));
+const wfKey = (w) => w.groupOverride || w.noteKey || (w.existing && !w.inScope ? "§EX" : (w.tag || "?"));
 const wfLabel = (key, wf) => (key === "?" ? "Untagged" : key === "§EX" ? "Existing" : key.startsWith("§N") ? (wf?.noteLabels?.[key] || "Noted") : key);
 const WF_HANDLE_SCALE = 0.45;   // end dots show (and grab) only zoomed in this far — zoomed out they bury the plan
 const NOTE_INCLUDE = new Set(["fur_existing", "patch_repair", "new_board_on_existing", "include_existing", "new_work"]);
@@ -3506,7 +3506,7 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { setWallFind(null); clearPoly(); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); setSymbolAnchor(null); setImageAnchor(null); setTextAnchor(null); setCopyReceipt(receiptAfterEsc); copyGateRef.current.begin(); setPlacingImageId(null); placeGrabRef.current = null; placeCrossSheetRef.current = null; setAlignPt(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      } else if (e.key === "Escape") { if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else if (wfMenu) { setWfMenu(null); } else { setWallFind(null); clearPoly(); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); setSymbolAnchor(null); setImageAnchor(null); setTextAnchor(null); setCopyReceipt(receiptAfterEsc); copyGateRef.current.begin(); setPlacingImageId(null); placeGrabRef.current = null; placeCrossSheetRef.current = null; setAlignPt(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -3563,6 +3563,8 @@ export default function TakeoffCanvas() {
     // Pan WITHOUT leaving the draw tool: middle-drag, right-drag, or Space-drag.
     // (There is no Pan tool — Select's open-canvas drag and the deferred-click
     // hold-drag below cover the rest of the modeless-pan doctrine.)
+    if (e.button === 2) rightDownRef.current = { x: e.clientX, y: e.clientY };
+    if (wfMenu && e.button === 0) setWfMenu(null);
     if (e.button === 1 || e.button === 2 || spaceRef.current) {
       promoteStage();
       panRef.current = { sx: e.clientX, sy: e.clientY, ox: tfRef.current.x, oy: tfRef.current.y };
@@ -5118,6 +5120,8 @@ export default function TakeoffCanvas() {
   // Orange comes last: CAD hatch and the plan's own highlights are often orange.
   const WALL_REVIEW_COLORS = ["#e6194b", "#1f5cff", "#00a651", "#f032e6", "#00b8d9", "#7b2cbf", "#9acd32", "#008080", "#b8002e", "#000080", "#8a8a00", "#8b4513", "#ff69b4", "#f58231"];
   const wfDragRef = useRef(null);   // Find walls review: dragging a run's end {id, end, other, dir}
+  const [wfMenu, setWfMenu] = useState(null);   // right-click menu on a review run: { x, y, id, line }
+  const rightDownRef = useRef(null);            // where a right press started (a right-DRAG pans; a right-CLICK opens the menu)
 
   async function runFindWalls() {
     const tp = focusPanel;
@@ -5310,6 +5314,68 @@ export default function TakeoffCanvas() {
     setWallFind((wf) => { const off = new Set(wf.off); if (off.has(best.id)) off.delete(best.id); else off.add(best.id); const touched = new Set(wf.touched); touched.add(best.id); return { ...wf, off, touched }; });
     return true;
   }
+  // the review run under a canvas point (panel-local hit test), or null
+  function wallFindRunAt(p) {
+    if (!wallFind) return null;
+    const tp = panelByKey(wallFind.key);
+    if (!tp || p[0] < tp.xOffset || p[0] > tp.xOffset + tp.img.w) return null;
+    const x = p[0] - tp.xOffset, y = p[1];
+    let best = null, bd = 6 / tfRef.current.scale;
+    for (const w of wallFind.walls) {
+      const dx = w.b[0] - w.a[0], dy = w.b[1] - w.a[1], L2 = dx * dx + dy * dy || 1;
+      const u = Math.max(0, Math.min(1, ((x - w.a[0]) * dx + (y - w.a[1]) * dy) / L2));
+      const d = Math.hypot(x - w.a[0] - u * dx, y - w.a[1] - u * dy) - w.thickPx / 2;
+      if (d < bd) { bd = d; best = w; }
+    }
+    return best;
+  }
+  // right-click (not right-drag, which pans) on a run → its regroup menu
+  function openWallFindMenu(e) {
+    if (!wallFind) return;
+    const r0 = rightDownRef.current;
+    if (r0 && Math.hypot(e.clientX - r0.x, e.clientY - r0.y) > 5) return;
+    const w = wallFindRunAt(toImage(e.clientX, e.clientY));
+    const box = containerRef.current?.getBoundingClientRect();
+    if (!w || !box) { setWfMenu(null); return; }
+    setWfMenu({ x: e.clientX - box.left, y: e.clientY - box.top, id: w.id, line: false });
+  }
+  // the pieces of a run's wall line: same direction and thickness, on one line, end to end
+  const wallLineOf = (walls, w) => {
+    const ux = (w.b[0] - w.a[0]), uy = (w.b[1] - w.a[1]), L = Math.hypot(ux, uy) || 1;
+    const dx = ux / L, dy = uy / L;
+    return walls.filter((o) => {
+      const ox = o.b[0] - o.a[0], oy = o.b[1] - o.a[1], oL = Math.hypot(ox, oy) || 1;
+      if (Math.abs((ox * dx + oy * dy) / oL) < 0.999 || Math.abs(o.thickIn - w.thickIn) > 1) return false;
+      const off = Math.abs((o.a[0] - w.a[0]) * -dy + (o.a[1] - w.a[1]) * dx);
+      return off <= Math.max(w.thickPx, o.thickPx) / 2;
+    }).map((o) => o.id);
+  };
+  // move a run (or its whole wall line) to a group; a project assembly not yet in
+  // the review becomes a group of its own, mapped to that assembly
+  function regroupRuns(ids, key, condId) {
+    setWallFind((cur) => {
+      if (!cur) return cur;
+      const set = new Set(ids);
+      const map = { ...cur.map }, colors = { ...cur.colors };
+      if (condId && !(key in map)) map[key] = condId;
+      if (!colors[key]) colors[key] = WALL_REVIEW_COLORS[Object.keys(colors).length % WALL_REVIEW_COLORS.length];
+      const off = new Set(cur.off);
+      for (const id of ids) off.delete(id);
+      const touched = new Set(cur.touched); for (const id of ids) touched.add(id);
+      return { ...cur, map, colors, off, touched, walls: cur.walls.map((w) => (set.has(w.id) ? { ...w, groupOverride: key } : w)) };
+    });
+    setWfMenu(null);
+  }
+  function dropRuns(ids, drop) {
+    setWallFind((cur) => {
+      if (!cur) return cur;
+      const off = new Set(cur.off), touched = new Set(cur.touched);
+      for (const id of ids) { if (drop) off.add(id); else off.delete(id); touched.add(id); }
+      return { ...cur, off, touched };
+    });
+    setWfMenu(null);
+  }
+
   // Stretch or trim a suggested run: the end slides along the run's own line
   // (hold ⇧ to move it freely), snapping to the plan's line ends and corners.
   function wallFindDragMove(e) {
@@ -10141,7 +10207,7 @@ export default function TakeoffCanvas() {
        )}
        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         <div ref={containerRef} onPointerDownCapture={annotations.onPointerDownCapture} onPointerMoveCapture={annotations.onPointerMoveCapture} onPointerUpCapture={annotations.onPointerUpCapture} onPointerCancelCapture={annotations.onPointerCancelCapture} onDoubleClickCapture={annotations.onDoubleClickCapture} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas} onContextMenu={(e) => e.preventDefault()}
+          onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas} onContextMenu={(e) => { e.preventDefault(); openWallFindMenu(e); }}
           onDoubleClick={(e) => { if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); } else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "surface" || tool === "zone") finishShape(); else if (tool === "select") editMarkupAt(e); }}
           style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "var(--paper-cream)", cursor: tool === "annotation" ? "crosshair" : tool === "select" ? "default" : "none", touchAction: "none" }}>
           {/* aim crosshair (draw modes): the OS cursor is hidden on the canvas — the
@@ -11214,6 +11280,46 @@ export default function TakeoffCanvas() {
         {/* live readout — top-right, at right:56 so it clears the panel rail's
             column entirely (right:14, 34px wide — same clearance the zone panel
             uses) instead of the old magic maxHeight tuned to the rail's height. */}
+        {wallFind && wfMenu && (() => {
+          const w = wallFind.walls.find((x) => x.id === wfMenu.id);
+          if (!w) return null;
+          const ids = wfMenu.line ? wallLineOf(wallFind.walls, w) : [w.id];
+          const cur = wfKey(w);
+          const groups = wallFindGroups(wallFind).map((g) => g.tag);
+          const inReview = new Set(groups.map((g) => g.toUpperCase()));
+          const extra = conditions.filter((c) => c.finish_tag && !inReview.has(c.finish_tag.trim().toUpperCase()));
+          const isOff = wallFind.off.has(w.id);
+          const item = { display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 10px", border: "none", background: "transparent", textAlign: "left", cursor: "pointer", font: "inherit", fontSize: 12.5 };
+          return (
+            <div data-find-walls-menu onPointerDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}
+              style={{ position: "absolute", left: Math.min(wfMenu.x, (containerRef.current?.clientWidth || 9999) - 240), top: Math.min(wfMenu.y, (containerRef.current?.clientHeight || 9999) - 360), width: 230, maxHeight: 360, overflowY: "auto", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi + 1, padding: "6px 0" }}>
+              <div style={{ padding: "2px 10px 6px", fontSize: 11.5, color: "var(--ink-muted)" }}>{wfLabel(cur, wallFind)} · {w.thickIn}" · {w.lengthFt} ft{w.tag && w.tag !== cur ? ` · plan tag ${w.tag}` : ""}</div>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 10px 6px", fontSize: 12 }}>
+                <input type="checkbox" checked={wfMenu.line} onChange={(e) => setWfMenu({ ...wfMenu, line: e.target.checked })} />
+                Whole wall line ({wallLineOf(wallFind.walls, w).length} run{wallLineOf(wallFind.walls, w).length === 1 ? "" : "s"})
+              </label>
+              <div style={{ padding: "2px 10px", fontSize: 10.5, letterSpacing: 0.5, textTransform: "uppercase", opacity: 0.55 }}>Move to</div>
+              {groups.filter((g) => g !== cur).map((g) => (
+                <button key={g} type="button" style={item} onClick={() => regroupRuns(ids, g)}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--paper)"; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+                  <span style={{ width: 12, height: 12, borderRadius: 2, background: wallFind.colors?.[g] || "#888", flex: "0 0 12px" }} />
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{wfLabel(g, wallFind)}</span>
+                  {!wallFind.map[g] && <span style={{ fontSize: 10.5, opacity: 0.6 }}>skipped</span>}
+                </button>
+              ))}
+              {extra.length > 0 && (
+                <div style={{ padding: "4px 10px" }}>
+                  <select aria-label="Move to another assembly" value="" onChange={(e) => { const c = conditions.find((x) => x.id === e.target.value); if (c) regroupRuns(ids, c.finish_tag.trim().toUpperCase(), c.id); }} style={{ width: "100%" }}>
+                    <option value="">Another assembly…</option>
+                    {extra.map((c) => <option key={c.id} value={c.id}>{c.finish_tag}{c.label ? ` — ${c.label}` : ""}</option>)}
+                  </select>
+                </div>
+              )}
+              <div style={{ borderTop: "1px solid var(--ink-faint)", margin: "6px 0" }} />
+              <button type="button" style={item} onClick={() => dropRuns(ids, !isOff)}>{isOff ? "Restore" : "Drop"} {ids.length > 1 ? `these ${ids.length} runs` : "this run"}</button>
+            </div>
+          );
+        })()}
         {schedOpen && <ScheduleReader findSchedule={findProjectSchedule} renderSheet={renderSheetImage} visibleArea={visibleSheetArea} currentSheet={currentSheetLabel()} onClose={() => setSchedOpen(false)} onAdd={addScheduleAssemblies} />}
         {wallFind && (() => {
           const groups = wallFindGroups(wallFind);
