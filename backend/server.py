@@ -96,6 +96,18 @@ thickness and the partition schedule text if given. Plan tags and assembly names
 (e.g. plan "WP-2" = assembly "W2" or "Type 2"; "1A" = "P-1A"). Return null for a tag that is not a wall type
 (door, window, room or equipment tags such as D2, W/A, 101) or that matches no assembly. Never guess wildly.
 Answer ONLY with a JSON object mapping each plan tag to an assembly id or null, e.g. {"WP-2": "cnd_ab12", "D2": null}."""
+REVIEW_RUNS_PROMPT = """This image is a grid of numbered tiles cut from a commercial construction floor plan.
+In each tile, ONE candidate wall run found by software is highlighted with a translucent MAGENTA band.
+Judge only the highlighted run in each tile:
+- "wall": true if it is a real wall or partition (two parallel lines a wall-thickness apart, often hatched or filled);
+  false if it is something else: casework/counter/millwork, door frame or swing, window, column, equipment,
+  furniture, plumbing fixture, stair, dimension or annotation line, title block or table border.
+- "status": "new", "existing", "demo" or "unknown" — existing walls are usually drawn lighter/screened/greyed
+  or with a different hatch than new ones; demolished ones dashed.
+- "tag": a wall type tag (e.g. "WP-2", "P1") that clearly points at this run, else "".
+- "confidence": 0 to 1.
+- "why": a few words.
+Answer ONLY with a JSON array, one object per tile, e.g. [{"n": 1, "wall": true, "status": "new", "tag": "", "confidence": 0.8, "why": "double line partition"}]."""
 EMAIL_KEYS = ("smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from", "public_url")
 INVITE_DAYS = 7
 MAX_JSON = 64 * 1024 * 1024        # takeoff payload / library JSON
@@ -774,6 +786,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"ok": True, "models": [m_["id"] for m_ in models]})
         if p == ["ai", "read-schedule"] and m == "POST":
             return self.ai_read_schedule(c, me)
+        if p == ["ai", "review-runs"] and m == "POST":
+            return self.ai_review_runs(c, me)
         if p == ["ai", "map-tags"] and m == "POST":
             return self.ai_map_tags(c, me)
         if p == ["ai", "read-notes"] and m == "POST":
@@ -1005,6 +1019,63 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": [], "raw": text[:2000],
                                         "error": "The AI answered, but not with a list of wall types. Try a tighter crop of just the schedule."})
         return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": walls})
+
+    def ai_review_runs(self, c, me):
+        """A grid of numbered plan tiles, each with one highlighted candidate run →
+        the vision model's verdict per tile. Image and answer are logged: training
+        data for fine-tuning a vision model on Vanguard's own drawings."""
+        import base64
+        cfg = get_settings(c)
+        if not ai_ready(cfg):
+            raise ApiError(400, "AI isn't connected yet.")
+        body = self.read_json()
+        img = str(body.get("image") or "")
+        m_ = re.match(r"^data:(image/(?:png|jpeg|webp));base64,(.+)$", img, re.S)
+        if not m_:
+            raise ApiError(400, "Send the tiles as a PNG or JPEG image.")
+        raw_bytes = base64.b64decode(m_.group(2))
+        if len(raw_bytes) > 15 * 1024 * 1024:
+            raise ApiError(413, "That image is too large.")
+        digest = hashlib.sha256(raw_bytes).hexdigest()
+        dest = self.app.blob_path(digest)
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(raw_bytes)
+        n = max(1, min(40, int(body.get("count") or 1)))
+        hint = str(body.get("legend") or "").strip()[:800]
+        model = ai_model(cfg)
+        ctx = ai_context_len(cfg, model)
+        budget = answer_budget(ctx, len(REVIEW_RUNS_PROMPT) + len(hint), True, want=min(4000, 120 * n + 200))
+        t0 = time.time()
+        out = ai_request(cfg, "/chat/completions", {
+            "model": model, "temperature": 0, "max_tokens": budget,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": img}},
+                {"type": "text", "text": REVIEW_RUNS_PROMPT + f"\nThere are {n} tiles." + (f"\nThe drawing's legend says: {hint}" if hint else "")}]}],
+        })
+        ms = int((time.time() - t0) * 1000)
+        reply = ((out.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        if isinstance(reply, list):
+            reply = "".join(part.get("text", "") for part in reply if isinstance(part, dict))
+        reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.S)
+        verdicts = extract_json_array(reply) or []
+        clean = []
+        for v in verdicts:
+            if not isinstance(v, dict):
+                continue
+            try:
+                k = int(v.get("n"))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= k <= n:
+                conf = v.get("confidence")
+                clean.append({"n": k, "wall": v.get("wall") is not False, "status": str(v.get("status") or "unknown").lower()[:10],
+                              "tag": str(v.get("tag") or "")[:12], "confidence": float(conf) if isinstance(conf, (int, float)) else 0.5,
+                              "why": str(v.get("why") or "")[:80]})
+        c.execute("INSERT INTO ai_log (kind, user_id, image_hash, model, raw, result, ms, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                  ("vision_runs", me["id"], digest, model, reply, json.dumps(clean), ms, time.time()))
+        return self.send_json(200, {"verdicts": clean, "ms": ms, "model": model})
 
     def ai_map_tags(self, c, me):
         """Plan wall tags → the project's assemblies (ids), when their names differ."""

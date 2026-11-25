@@ -5165,8 +5165,9 @@ export default function TakeoffCanvas() {
     setCommitMsg(`Found ${res.walls.length} wall runs${auto.size ? ` — the wall checker dropped ${auto.size} likely non-walls` : ""}.${aiEnabled ? " The AI is reading the legend and notes and matching tags…" : ""} Map each tag to an assembly, click a run to drop or restore it, then Add.`);
     // the AI joins every run: legend & notes (cached per sheet) and plan-tag → assembly matching
     if (aiEnabled) {
-      checkScopeNotes({ key: tp.key, walls: res.walls });
       matchTagsWithAI(tp.key, res.walls, map);
+      // legend first (it tells the vision pass what existing walls look like), then the look
+      checkScopeNotes({ key: tp.key, walls: res.walls }).finally(() => setTimeout(() => { if (wallFindRef.current?.key === tp.key) aiLookAtRuns("latest"); }, 60));
     }
   }
   const wallFindGroups = (wf) => {
@@ -5180,6 +5181,113 @@ export default function TakeoffCanvas() {
     const rank = (t) => (t.startsWith("§N") ? 0 : t === "§EX" ? 2 : t === "?" ? 3 : 1);
     return [...g.values()].sort((p, q) => rank(p.tag) - rank(q.tag) || q.lf - p.lf);
   };
+
+  // ── Find walls: the AI looks at the doubtful runs ───────────────────────
+  // The sheet is drawn ONCE from the PDF (fresh, white, never the dark-mode
+  // panel), the doubtful runs are cut out as numbered tiles with the run
+  // highlighted, 12 tiles to a picture, and the vision model judges each: wall
+  // or not, new or existing, which tag. Confident "not a wall" drops the run
+  // (click to restore); its other answers adjust the run.
+  const WF_TILE = 448, WF_COLS = 4, WF_PER_IMAGE = 12, WF_LOOK_MAX = 24;
+  const wallFindRef = useRef(null);
+  wallFindRef.current = wallFind;   // async AI passes read the review as it is NOW, not as it was when they started
+  async function sheetRasterFor(key) {
+    const pageObj = pageObjsRef.current.get(key), dims = panelImgs[key];
+    if (!pageObj || !dims?.w) return null;
+    const rs = renderScalesRef.current.get(key) || RENDER_SCALE;
+    const ws = Math.min(1, 6000 / Math.max(dims.w, dims.h, 1));
+    const cv = document.createElement("canvas");
+    cv.width = Math.max(2, Math.ceil(dims.w * ws)); cv.height = Math.max(2, Math.ceil(dims.h * ws));
+    const ctx = cv.getContext("2d");
+    if (!ctx) return null;
+    await pageObj.render({ canvasContext: ctx, viewport: pageObj.getViewport({ scale: rs * ws }), background: "#ffffff" }).promise;
+    return { cv, ws };
+  }
+  function wfLookCandidates(wf, already) {
+    return wf.walls
+      .filter((w) => !already.has(w.id) && !(wf.off.has(w.id) && !wf.auto?.has(w.id)))
+      .filter((w) => (w.score != null ? w.score < DOUBT_BELOW : (!w.tag || w.tagSource === "thickness")) || (w.existing && !w.style))
+      .sort((a, b) => b.lengthFt - a.lengthFt)
+      .slice(0, WF_LOOK_MAX);
+  }
+  async function aiLookAtRuns(given) {
+    const wf = given === "latest" ? wallFindRef.current : (given || wallFind);
+    if (!wf || !aiEnabled) return;
+    const already = new Set(Object.keys(wf.aiLook?.seen || {}).map(Number));
+    const runs = wfLookCandidates(wf, already);
+    if (!runs.length) { setWallFind((cur) => cur && { ...cur, aiLook: { ...(cur.aiLook || {}), status: "done", none: true } }); return; }
+    const upp = uppFor(wf.key);
+    const ppf = upp ? 1 / upp : 18;
+    setWallFind((cur) => cur && { ...cur, aiLook: { ...(cur.aiLook || {}), status: "looking", progress: `drawing ${runs.length} runs…` } });
+    try {
+      const ras = await sheetRasterFor(wf.key);
+      if (!ras) throw new Error("This sheet isn't rendered yet.");
+      const sc = scopeResultRef.current.get(wf.key);
+      const legend = sc ? [sc.existing_style && `existing walls: ${sc.existing_style}`, ...(sc.legend || []).filter((e) => /wall/.test(e.meaning)).map((e) => `${e.label} = ${e.meaning.replace("_", " ")}`)].filter(Boolean).join("; ") : "";
+      const verdictById = {};
+      for (let b = 0; b < runs.length; b += WF_PER_IMAGE) {
+        const batch = runs.slice(b, b + WF_PER_IMAGE);
+        const rows = Math.ceil(batch.length / WF_COLS);
+        const grid = document.createElement("canvas");
+        grid.width = WF_TILE * Math.min(WF_COLS, batch.length); grid.height = WF_TILE * rows;
+        const g = grid.getContext("2d");
+        g.fillStyle = "#fff"; g.fillRect(0, 0, grid.width, grid.height);
+        batch.forEach((w, i) => {
+          const len = Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
+          const pad = Math.max(5 * ppf, 0.3 * len);
+          const cx = (w.a[0] + w.b[0]) / 2, cy = (w.a[1] + w.b[1]) / 2;
+          const half = Math.max(len / 2 + pad, 6 * ppf);
+          const sx = (cx - half) * ras.ws, sy = (cy - half) * ras.ws, sw = 2 * half * ras.ws;
+          const ox = (i % WF_COLS) * WF_TILE, oy = Math.floor(i / WF_COLS) * WF_TILE;
+          g.save();
+          g.beginPath(); g.rect(ox, oy, WF_TILE, WF_TILE); g.clip();
+          g.drawImage(ras.cv, sx, sy, sw, sw, ox, oy, WF_TILE, WF_TILE);
+          // the candidate: a translucent magenta band over the run
+          const k = WF_TILE / (2 * half);
+          g.strokeStyle = "rgba(255,0,200,0.45)"; g.lineCap = "butt";
+          g.lineWidth = Math.max(6, (w.thickPx + 6) * k);
+          g.beginPath(); g.moveTo(ox + (w.a[0] - cx + half) * k, oy + (w.a[1] - cy + half) * k); g.lineTo(ox + (w.b[0] - cx + half) * k, oy + (w.b[1] - cy + half) * k); g.stroke();
+          g.restore();
+          g.strokeStyle = "#333"; g.lineWidth = 2; g.strokeRect(ox + 1, oy + 1, WF_TILE - 2, WF_TILE - 2);
+          g.fillStyle = "#000"; g.fillRect(ox + 4, oy + 4, 34, 26);
+          g.fillStyle = "#fff"; g.font = "bold 18px sans-serif"; g.fillText(String(i + 1), ox + 10, oy + 24);
+        });
+        setWallFind((cur) => cur && { ...cur, aiLook: { ...(cur.aiLook || {}), status: "looking", progress: `the AI is looking at runs ${b + 1}–${b + batch.length} of ${runs.length}…` } });
+        const r = await vanguardApi("POST", "/api/ai/review-runs", { json: { image: grid.toDataURL("image/jpeg", 0.88), count: batch.length, legend } });
+        grid.width = grid.height = 0;
+        for (const v of r.verdicts || []) { const w = batch[v.n - 1]; if (w) verdictById[w.id] = v; }
+      }
+      ras.cv.width = ras.cv.height = 0;
+      setWallFind((cur) => {
+        if (!cur) return cur;
+        const off = new Set(cur.off), auto = new Set(cur.auto || []);
+        let dropped = 0, existing = 0, tagged = 0;
+        const groupTags = new Set(Object.keys(cur.map));
+        const walls = cur.walls.map((w) => {
+          const v = verdictById[w.id];
+          if (!v) return w;
+          const nw = { ...w, ai: v };
+          if (cur.touched?.has(w.id)) return nw;              // the estimator already decided this one
+          if (v.wall === false && v.confidence >= 0.6) { off.add(w.id); auto.add(w.id); dropped++; return nw; }
+          if (v.wall && off.has(w.id) && auto.has(w.id) && v.confidence >= 0.7) { off.delete(w.id); auto.delete(w.id); }
+          if (!w.style && !w.inScope && v.confidence >= 0.6) {
+            if (v.status === "existing" || v.status === "demo") { if (!w.existing) existing++; nw.existing = true; }
+            else if (v.status === "new") nw.existing = false;
+          }
+          const t = (v.tag || "").toUpperCase();
+          if (t && !w.tag && groupTags.has(t) && v.confidence >= 0.6) { nw.tag = t; nw.tagSource = "near"; tagged++; }
+          return nw;
+        });
+        const seen = { ...(cur.aiLook?.seen || {}) };
+        for (const id of Object.keys(verdictById)) seen[id] = 1;
+        const prev = cur.aiLook || {};
+        return { ...cur, walls, off, auto, aiLook: { status: "done", seen, looked: (prev.looked || 0) + Object.keys(verdictById).length, dropped: (prev.dropped || 0) + dropped, existing: (prev.existing || 0) + existing, tagged: (prev.tagged || 0) + tagged } };
+      });
+    } catch (e) {
+      const msg = String(e?.message || e);
+      setWallFind((cur) => cur && { ...cur, aiLook: { ...(cur.aiLook || {}), status: "error", error: /text only|multimodal/i.test(msg) ? "The model on your AI server can't read pictures — switch the Pod to a vision model to use this." : msg } });
+    }
+  }
 
   // plan tags that matched no assembly by name → the AI pairs them with the
   // project's assemblies (descriptions, thickness, the partition schedule)
@@ -10780,7 +10888,7 @@ export default function TakeoffCanvas() {
                             strokeOpacity={off ? 0.7 : !cid ? 0.28 : w.tagSource === "thickness" || !w.tag ? 0.7 : 0.9}
                             strokeWidth={off ? 2 / tf.scale : Math.max(w.thickPx, 3 / tf.scale)}
                             strokeDasharray={off ? `${2 / tf.scale} ${4 / tf.scale}` : undefined}>
-                            <title>{`${w.noteKey ? `${wfLabel(w.noteKey, wallFind)} · ` : ""}${w.existing ? "existing (screened pen) · " : ""}${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${w.score != null ? ` · wall checker ${Math.round(w.score * 100)}%` : ""}${off ? (wallFind.auto?.has(w.id) && !wallFind.touched?.has(w.id) ? " · dropped by the checker (click to restore)" : " · dropped") : ""}`}</title>
+                            <title>{`${w.noteKey ? `${wfLabel(w.noteKey, wallFind)} · ` : ""}${w.existing ? "existing (screened pen) · " : ""}${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${w.score != null ? ` · wall checker ${Math.round(w.score * 100)}%` : ""}${w.ai ? ` · AI: ${w.ai.wall ? `wall, ${w.ai.status}` : "not a wall"}${w.ai.why ? ` (${w.ai.why})` : ""}` : ""}${off ? (wallFind.auto?.has(w.id) && !wallFind.touched?.has(w.id) ? " · dropped by the checker (click to restore)" : " · dropped") : ""}`}</title>
                           </line>{!off && cid && w.score != null && w.score < DOUBT_BELOW && <line x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke="#111" strokeOpacity={0.75} strokeWidth={1.2 / tf.scale} strokeDasharray={`${6 / tf.scale} ${4 / tf.scale}`} pointerEvents="none" />}</g>;
                         })}
                         {/* end handles: drag to stretch or trim a run (⇧ moves the end freely) */}
@@ -11376,6 +11484,20 @@ export default function TakeoffCanvas() {
                     {nEx > 0 && <div style={{ marginBottom: 4 }}><b>{nEx}</b> runs are drawn in a lighter (screened) pen — likely <b>existing</b>, grouped as “Existing” and skipped unless you pick an assembly.</div>}
                     {!sc && <button type="button" onClick={() => checkScopeNotes()} style={{ padding: "4px 8px", border: "1px solid var(--ink-faint)", background: "#fff", cursor: "pointer", fontWeight: 600 }}>✨ Read the legend &amp; notes</button>}
                     {!sc && <span style={{ color: "var(--ink-muted)" }}> — the AI reads the symbol/wall legend (which line style is new, existing or demolished; which marks are door tags) and the notes and keynotes for existing walls you do work on, then applies it to these runs.</span>}
+                    {(() => {
+                      const al = wallFind.aiLook;
+                      if (!al) return null;
+                      return (
+                        <div style={{ marginBottom: 4 }}>
+                          {al.status === "looking" && <span>👁 {al.progress}</span>}
+                          {al.status === "error" && <span style={{ color: "var(--c-danger)" }}>👁 {al.error}</span>}
+                          {al.status === "done" && (al.looked
+                            ? <span>👁 The AI looked at <b>{al.looked}</b> doubtful runs: dropped <b>{al.dropped}</b> that aren't walls, marked <b>{al.existing}</b> existing{al.tagged ? <>, tagged <b>{al.tagged}</b></> : null}. Hover a run to see why.{" "}
+                                {wfLookCandidates(wallFind, new Set(Object.keys(al.seen || {}).map(Number))).length > 0 && <button type="button" onClick={() => aiLookAtRuns()} style={{ padding: "1px 6px", border: "1px solid var(--ink-faint)", background: "#fff", cursor: "pointer", fontSize: 11 }}>Look at more</button>}</span>
+                            : <span>👁 No doubtful runs for the AI to look at.</span>)}
+                        </div>
+                      );
+                    })()}
                     {sc?.status === "reading" && <span>Reading the notes… <span style={{ color: "var(--ink-muted)" }}>{sc.progress}</span></span>}
                     {sc?.status === "error" && <span style={{ color: "var(--c-danger)" }}>{sc.error} <button type="button" onClick={() => checkScopeNotes(null, { force: true })}>Try again</button></span>}
                     {sc?.status === "done" && sc.none && <span>No scope notes found in this set's text.</span>}

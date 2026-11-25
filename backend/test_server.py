@@ -325,6 +325,14 @@ class ServerTest(unittest.TestCase):
             s, out, _ = admin.req("POST", "/api/ai/map-tags", {"tags": [{"tag": "WP-2", "thick_in": 4.9}, {"tag": "D2"}, {"tag": "WP-9"}],
                                                               "assemblies": [{"id": "cnd_w2", "tag": "W2", "desc": "3-5/8 studs acoustic"}]})
             self.assertEqual(out["map"], {"WP-2": "cnd_w2", "D2": None, "WP-9": None})
+            # vision review of run tiles
+            seen["reply"] = '[{"n": 1, "wall": false, "status": "unknown", "confidence": 0.9, "why": "counter"}, {"n": 2, "wall": true, "status": "existing", "tag": "WP-2", "confidence": 0.7}, {"n": 9, "wall": true}]'
+            s, out, _ = admin.req("POST", "/api/ai/review-runs", {"image": img, "count": 2, "legend": "existing walls screened"})
+            self.assertEqual(s, 200)
+            self.assertEqual([(v["n"], v["wall"], v["status"]) for v in out["verdicts"]], [(1, False, "unknown"), (2, True, "existing")])
+            sent = seen["body"]["messages"][0]["content"]
+            self.assertEqual(sent[0]["image_url"]["url"], img)
+            self.assertIn("existing walls screened", sent[1]["text"])
             # wrong image type refused
             self.assertEqual(admin.req("POST", "/api/ai/read-schedule", {"image": "data:text/plain;base64,aGk="})[0], 400)
         finally:
