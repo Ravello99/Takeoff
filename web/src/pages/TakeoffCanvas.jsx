@@ -5153,6 +5153,8 @@ export default function TakeoffCanvas() {
     const colors = {};
     [...lfByTag.keys()].sort((a, b) => (a === "?") - (b === "?") || lfByTag.get(b) - lfByTag.get(a))
       .forEach((t, i) => { colors[t] = WALL_REVIEW_COLORS[i % WALL_REVIEW_COLORS.length]; });
+    // colours the estimator picked before (per tag) win
+    try { const saved = JSON.parse(localStorage.getItem("vt_wall_colors") || "{}"); for (const t of Object.keys(colors)) if (saved[t]) colors[t] = saved[t]; } catch { /* none saved */ }
     setWallFind({ key: tp.key, walls: res.walls, map, colors, off, auto, touched: new Set(), pens: res.pens, checker: { trained: !!wm.model, n: wm.model?.n || 0, decisions: wm.decisions, offline: !!wm.offline, dropped: auto.size, doubtful } });
     setCommitMsg(`Found ${res.walls.length} wall runs${auto.size ? ` — the wall checker dropped ${auto.size} likely non-walls` : ""}. Map each tag to an assembly, click a run to drop or restore it, then Add.`);
   }
@@ -10644,11 +10646,12 @@ export default function TakeoffCanvas() {
                         {wallFind.walls.map((w) => {
                           const off = wallFind.off.has(w.id);
                           const cid = wallFind.map[wfKey(w)];
-                          // tag colour while it will be added; grey when dropped or its tag is skipped
-                          const col = off || !cid ? "#8a8a8a" : (wallFind.colors?.[wfKey(w)] || "#1f3fc7");
+                          // its group's colour; a skipped group keeps its colour (dashed, lighter) so it
+                          // stays visible; only runs you dropped go dark grey
+                          const col = off ? "#4a4a4a" : (wallFind.colors?.[wfKey(w)] || "#1f3fc7");
                           return <g key={"fw" + w.id}>{w.noteKey && !off && <line x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke="#ffd400" strokeOpacity={0.55} strokeWidth={Math.max(w.thickPx, 3 / tf.scale) + 10 / tf.scale} strokeLinecap="round" />}<line x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke={col}
-                            strokeOpacity={off ? 0.35 : !cid ? 0.4 : w.tagSource === "thickness" || !w.tag ? 0.6 : 0.85}
-                            strokeWidth={Math.max(w.thickPx, 3 / tf.scale)} strokeDasharray={off ? `${4 / tf.scale} ${4 / tf.scale}` : (w.score != null && w.score < DOUBT_BELOW ? `${10 / tf.scale} ${3 / tf.scale}` : undefined)}>
+                            strokeOpacity={off ? 0.55 : !cid ? 0.5 : w.tagSource === "thickness" || !w.tag ? 0.7 : 0.9}
+                            strokeWidth={Math.max(w.thickPx, 3 / tf.scale)} strokeDasharray={off ? `${3 / tf.scale} ${5 / tf.scale}` : !cid ? `${8 / tf.scale} ${5 / tf.scale}` : (w.score != null && w.score < DOUBT_BELOW ? `${10 / tf.scale} ${3 / tf.scale}` : undefined)}>
                             <title>{`${w.noteKey ? `${wfLabel(w.noteKey, wallFind)} · ` : ""}${w.existing ? "existing (screened pen) · " : ""}${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${w.score != null ? ` · wall checker ${Math.round(w.score * 100)}%` : ""}${off ? (wallFind.auto?.has(w.id) && !wallFind.touched?.has(w.id) ? " · dropped by the checker (click to restore)" : " · dropped") : ""}`}</title>
                           </line></g>;
                         })}
@@ -11191,7 +11194,7 @@ export default function TakeoffCanvas() {
           return (
             <div data-find-walls-panel style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 300, maxHeight: "60%", overflowY: "auto", padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5 }}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6 }}>Find walls — review</div>
-              <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag — each tag has its own colour on the plan; skipped tags show grey. Click a run to drop or restore it. Drag a run's white end dot to stretch or trim it (⇧ moves it freely). Paler runs were matched by thickness only — check them.</div>
+              <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag — each has its own colour on the plan (click a swatch to change it); skipped tags show dashed and lighter, runs you drop show dark grey dots. Click a run to drop or restore it. Drag a run's white end dot to stretch or trim it (⇧ moves it freely). Paler runs were matched by thickness only — check them.</div>
               <div style={{ fontSize: 11.5, marginBottom: 8, padding: "6px 8px", background: "var(--paper)", border: "1px solid var(--ink-faint)" }}>
                 {wallFind.checker?.trained
                   ? <>Wall checker (learned from {wallFind.checker.n} reviews{wallFind.checker.offline ? ", offline copy" : ""}): dropped <b>{wallFind.checker.dropped}</b> likely non-walls (grey dashes — click to restore); <b>{wallFind.checker.doubtful}</b> doubtful runs are drawn dashed.</>
@@ -11223,8 +11226,16 @@ export default function TakeoffCanvas() {
               })()}
               {groups.map((g) => (
                 <div key={g.tag} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                  <span aria-hidden title={wallFind.map[g.tag] ? "Colour on the plan" : "Skipped — shown grey on the plan"}
-                    style={{ width: 14, height: 14, flex: "0 0 14px", borderRadius: 3, background: wallFind.map[g.tag] ? (wallFind.colors?.[g.tag] || "#1f3fc7") : "transparent", border: `2px solid ${wallFind.colors?.[g.tag] || "#8a8a8a"}`, opacity: wallFind.map[g.tag] ? 1 : 0.5 }} />
+                  <label title={`${wallFind.map[g.tag] ? "Colour on the plan" : "Skipped — shown dashed in this colour"} · click to change`}
+                    style={{ position: "relative", width: 16, height: 16, flex: "0 0 16px", borderRadius: 3, cursor: "pointer", background: wallFind.map[g.tag] ? (wallFind.colors?.[g.tag] || "#1f3fc7") : `repeating-linear-gradient(45deg, ${wallFind.colors?.[g.tag] || "#8a8a8a"} 0 3px, transparent 3px 6px)`, border: `2px solid ${wallFind.colors?.[g.tag] || "#8a8a8a"}` }}>
+                    <input type="color" aria-label={`Colour for ${wfLabel(g.tag, wallFind)}`} value={wallFind.colors?.[g.tag] || "#1f3fc7"}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setWallFind((wf) => ({ ...wf, colors: { ...wf.colors, [g.tag]: v } }));
+                        if (!g.tag.startsWith("§N")) { try { const saved = JSON.parse(localStorage.getItem("vt_wall_colors") || "{}"); saved[g.tag] = v; localStorage.setItem("vt_wall_colors", JSON.stringify(saved)); } catch { /* storage full */ } }
+                      }}
+                      style={{ position: "absolute", inset: 0, opacity: 0, width: "100%", height: "100%", cursor: "pointer", border: 0, padding: 0 }} />
+                  </label>
                   <span title={wfLabel(g.tag, wallFind)} style={{ minWidth: 54, maxWidth: 110, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...(g.tag.startsWith("§N") ? { background: "#fff3b0", padding: "0 3px" } : {}) }}>{wfLabel(g.tag, wallFind)}</span>
                   <span style={{ minWidth: 70, color: "var(--ink-secondary)", fontVariantNumeric: "tabular-nums" }}>{g.n} · {fl(g.lf, 0)}</span>
                   <select aria-label={`Assembly for ${wfLabel(g.tag, wallFind)}`} value={wallFind.map[g.tag] || ""} onChange={(e) => { const v = e.target.value; setWallFind((wf) => ({ ...wf, map: { ...wf.map, [g.tag]: v } })); }} style={{ flex: 1, minWidth: 0 }}>
