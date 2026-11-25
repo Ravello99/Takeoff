@@ -5205,6 +5205,7 @@ export default function TakeoffCanvas() {
     // colours the estimator picked before (per tag) win
     try { const saved = JSON.parse(localStorage.getItem("vt_wall_colors") || "{}"); for (const t of Object.keys(colors)) if (saved[t]) colors[t] = saved[t]; } catch { /* none saved */ }
     setWfSel(new Set());
+    setWfSaved(null);
     setWallFind(wfConsolidate({ key: tp.key, walls: res.walls, map, colors, off, auto, touched: new Set(), pens: res.pens, checker: { trained: !!wm.model, n: wm.model?.n || 0, decisions: wm.decisions, offline: !!wm.offline, dropped: auto.size, doubtful } }));
     setCommitMsg(`Found ${res.walls.length} wall runs${auto.size ? ` — the wall checker dropped ${auto.size} likely non-walls` : ""}.${aiEnabled ? " The AI is reading the legend and notes and matching tags…" : ""} Map each tag to an assembly, click a run to drop or restore it, then Add.`);
     // the AI joins every run: legend & notes (cached per sheet) and plan-tag → assembly matching
@@ -5232,6 +5233,40 @@ export default function TakeoffCanvas() {
   // highlighted, 12 tiles to a picture, and the vision model judges each: wall
   // or not, new or existing, which tag. Confident "not a wall" drops the run
   // (click to restore); its other answers adjust the run.
+  // the review in progress is kept in this browser as you work, so a crash, a
+  // reload or a closed tab never loses it; Add or Cancel clears it
+  const wfStoreKey = `vt_wf_review:${store?.projectId || projectName || "local"}`;
+  const [wfSaved, setWfSaved] = useState(null);   // an unfinished review found on load: { savedAt, sheet, n }
+  const wfActiveRef = useRef(false);               // a review was open in THIS session (only then may closing it clear the saved copy)
+  useEffect(() => {
+    try { const raw = localStorage.getItem(wfStoreKey); if (raw) { const v = JSON.parse(raw); if (v?.wf?.walls?.length) setWfSaved({ savedAt: v.savedAt, sheet: v.wf.key, n: v.wf.walls.length }); } } catch { /* nothing saved */ }
+  }, [wfStoreKey]);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        if (!wallFind) { if (wfActiveRef.current && !wfSaved) localStorage.removeItem(wfStoreKey); return; }
+        wfActiveRef.current = true;
+        const { scope, ...rest } = wallFind;
+        const wf = { ...rest, off: [...wallFind.off], auto: [...(wallFind.auto || [])], touched: [...(wallFind.touched || [])],
+          scope: scope && scope.status === "done" ? { ...scope, status: "done" } : undefined,
+          aiLook: wallFind.aiLook && wallFind.aiLook.status !== "looking" ? wallFind.aiLook : (wallFind.aiLook ? { ...wallFind.aiLook, status: "done" } : undefined) };
+        localStorage.setItem(wfStoreKey, JSON.stringify({ savedAt: Date.now(), wf }));
+      } catch { /* storage full — the review just isn't kept */ }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [wallFind, wfStoreKey, wfSaved]);
+  function restoreWallFind() {
+    try {
+      const v = JSON.parse(localStorage.getItem(wfStoreKey) || "null");
+      if (!v?.wf) return;
+      const wf = v.wf;
+      setWallFind({ ...wf, off: new Set(wf.off), auto: new Set(wf.auto), touched: new Set(wf.touched) });
+      setWfSaved(null);
+      const open = panels.some((p) => p.key === wf.key);
+      setCommitMsg(open ? "Restored your Find walls review." : `Restored your Find walls review — open sheet ${wf.key} to see it.`);
+    } catch { setWfSaved(null); }
+  }
+  function discardSavedWallFind() { try { localStorage.removeItem(wfStoreKey); } catch { /* gone */ } setWfSaved(null); }
   const WF_TILE = 448, WF_COLS = 4, WF_PER_IMAGE = 12, WF_LOOK_MAX = 24;
   const wallFindRef = useRef(null);
   wallFindRef.current = wallFind;   // async AI passes read the review as it is NOW, not as it was when they started
@@ -5239,7 +5274,7 @@ export default function TakeoffCanvas() {
     const pageObj = pageObjsRef.current.get(key), dims = panelImgs[key];
     if (!pageObj || !dims?.w) return null;
     const rs = renderScalesRef.current.get(key) || RENDER_SCALE;
-    const ws = Math.min(1, 6000 / Math.max(dims.w, dims.h, 1));
+    const ws = Math.min(1, 4500 / Math.max(dims.w, dims.h, 1));   // ~80 MB at most, freed right after the tiles are cut
     const cv = document.createElement("canvas");
     cv.width = Math.max(2, Math.ceil(dims.w * ws)); cv.height = Math.max(2, Math.ceil(dims.h * ws));
     const ctx = cv.getContext("2d");
@@ -5263,8 +5298,9 @@ export default function TakeoffCanvas() {
     const upp = uppFor(wf.key);
     const ppf = upp ? 1 / upp : 18;
     setWallFind((cur) => cur && { ...cur, aiLook: { ...(cur.aiLook || {}), status: "looking", progress: `drawing ${runs.length} runs…` } });
+    let ras = null;
     try {
-      const ras = await sheetRasterFor(wf.key);
+      ras = await sheetRasterFor(wf.key);
       if (!ras) throw new Error("This sheet isn't rendered yet.");
       const sc = scopeResultRef.current.get(wf.key);
       const legend = sc ? [sc.existing_style && `existing walls: ${sc.existing_style}`, ...(sc.legend || []).filter((e) => /wall/.test(e.meaning)).map((e) => `${e.label} = ${e.meaning.replace("_", " ")}`)].filter(Boolean).join("; ") : "";
@@ -5301,7 +5337,7 @@ export default function TakeoffCanvas() {
         grid.width = grid.height = 0;
         for (const v of r.verdicts || []) { const w = batch[v.n - 1]; if (w) verdictById[w.id] = v; }
       }
-      ras.cv.width = ras.cv.height = 0;
+      ras.cv.width = ras.cv.height = 0; ras = null;
       setWallFind((cur) => {
         if (!cur) return cur;
         const off = new Set(cur.off), auto = new Set(cur.auto || []);
@@ -5331,6 +5367,7 @@ export default function TakeoffCanvas() {
       });
     } catch (e) {
       const msg = String(e?.message || e);
+      if (ras) { ras.cv.width = ras.cv.height = 0; ras = null; }   // never hold the big sheet image after a failure
       setWallFind((cur) => cur && { ...cur, aiLook: { ...(cur.aiLook || {}), status: "error", error: /text only|multimodal/i.test(msg) ? "The model on your AI server can't read pictures — switch the Pod to a vision model to use this." : msg } });
     }
   }
@@ -11488,6 +11525,13 @@ export default function TakeoffCanvas() {
         {/* live readout — top-right, at right:56 so it clears the panel rail's
             column entirely (right:14, 34px wide — same clearance the zone panel
             uses) instead of the old magic maxHeight tuned to the rail's height. */}
+        {wfSaved && !wallFind && (
+          <div role="status" style={{ position: "absolute", left: "50%", top: CANVAS_EDGE, transform: "translateX(-50%)", zIndex: Z.canvasUi + 1, background: "#fff", border: "1px solid #1f5cff", boxShadow: "var(--shadow-pop)", padding: "10px 14px", display: "flex", gap: 10, alignItems: "center", fontSize: 13 }}>
+            <span>You have an unfinished <b>Find walls review</b> ({wfSaved.n} runs, {new Date(wfSaved.savedAt).toLocaleString()}).</span>
+            <button type="button" onClick={restoreWallFind} style={{ padding: "5px 12px", background: "#0B2556", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 }}>Restore</button>
+            <button type="button" onClick={discardSavedWallFind} style={{ padding: "5px 10px", background: "transparent", border: "1px solid var(--ink-faint)", cursor: "pointer" }}>Discard</button>
+          </div>
+        )}
         {wallFind && wfMenu && (() => {
           const w = wallFind.walls.find((x) => x.id === wfMenu.id);
           if (!w) return null;

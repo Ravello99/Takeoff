@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import CrashGuard from "./components/vanguard/CrashGuard.jsx";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router";
 import "./styles/tokens.css";
@@ -513,7 +514,9 @@ ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <GoogleAuthProvider>
       <BrowserRouter>
-        <Root />
+        <CrashGuard>
+          <Root />
+        </CrashGuard>
       </BrowserRouter>
     </GoogleAuthProvider>
   </React.StrictMode>
