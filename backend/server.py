@@ -224,6 +224,8 @@ def ai_request(cfg: dict, path: str, body: dict | None = None, timeout: int = AI
         detail = e.read()[:300].decode("utf-8", "replace")
         if e.code == 404 and "Jupyter" in detail:
             raise ApiError(502, "That address is the Pod's Jupyter notebook (port 8888). Use the port 8000 link: https://POD-ID-8000.proxy.runpod.net/v1")
+        if e.code == 400 and "not a multimodal model" in detail:
+            raise ApiError(400, "The model on your AI server reads text only, not pictures. Send the schedule's text instead, or switch the Pod to a vision model (e.g. Qwen/Qwen3-VL-8B-Instruct).")
         if e.code == 404 and path == "/models":
             raise ApiError(502, f"The AI server has nothing at {url}. Check the address ends in /v1 and that vLLM is running on port 8000.")
         raise ApiError(502, f"The AI server answered {e.code}: {detail or e.reason}")

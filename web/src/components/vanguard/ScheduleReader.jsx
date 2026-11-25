@@ -86,7 +86,15 @@ export default function ScheduleReader({ onAdd, onClose, findSchedule, renderShe
         if (!pic) throw new Error("Couldn't draw the schedule from the PDF.");
         payload = { image: pic, hint };
       } else payload = found && !useImage ? { text: found.text, source: found.label, hint } : { image, hint };
-      const r = await api("POST", "/api/ai/read-schedule", { json: payload });
+      let r;
+      try { r = await api("POST", "/api/ai/read-schedule", { json: payload }); }
+      catch (e) {
+        // a text-only model can't take the picture: read the found schedule's text instead
+        if (payload.image && found && !useImage && /text only|multimodal/i.test(e.message || "")) {
+          setAsPicture(false);
+          r = await api("POST", "/api/ai/read-schedule", { json: { text: found.text, source: found.label, hint } });
+        } else throw e;
+      }
       if (r.error && !r.walls.length) setError(r.error);
       setResult({ ...r, rows: r.walls.map((w) => ({ ...normalizeWall(w), include: true })) });
     } catch (e) { setError(e.message); } finally { clearInterval(timer.current); setBusy(false); }
