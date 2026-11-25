@@ -230,6 +230,26 @@ import { legendSamples, matchWallStyles } from "../lib/legendStyles";
 // Find walls review groups: a scope note's walls, screened (existing) walls, or a plan tag
 const wfKey = (w) => w.groupOverride || w.noteKey || (w.existing && !w.inScope ? "§EX" : (w.tag || "?"));
 const wfLabel = (key, wf) => (key === "?" ? "Untagged" : key === "§EX" ? "Existing" : key.startsWith("§N") ? (wf?.noteLabels?.[key] || "Noted") : key);
+// Find walls review: groups that map to the SAME assembly become one group (one
+// row, one colour), named after the assembly's tag — so the AI's tag matching,
+// notes and vision answers never leave the panel with duplicates
+function consolidateWallFind(cur, condTag) {
+  if (!cur) return cur;
+  const map = { ...cur.map }, colors = { ...cur.colors }, aiMatched = { ...(cur.aiMatched || {}) };
+  const walls = cur.walls.map((w) => {
+    const k = wfKey(w), id = map[k];
+    if (!id) return w;
+    const target = condTag(id) || k;
+    if (target === k) return w;
+    if (!map[target]) map[target] = id;
+    if (!colors[target]) colors[target] = colors[k];
+    if (aiMatched[k]) aiMatched[target] = true;
+    return { ...w, groupOverride: target };
+  });
+  const used = new Set(walls.map(wfKey));
+  for (const k of Object.keys(map)) if (!used.has(k)) { delete map[k]; delete aiMatched[k]; }
+  return { ...cur, walls, map, colors, aiMatched };
+}
 const WF_HANDLE_SCALE = 0.45;   // end dots show (and grab) only zoomed in this far — zoomed out they bury the plan
 const NOTE_INCLUDE = new Set(["fur_existing", "patch_repair", "new_board_on_existing", "include_existing", "new_work"]);
 const NOTE_EXCLUDE = new Set(["exclude", "demo"]);
@@ -3506,7 +3526,7 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else if (wfMenu) { setWfMenu(null); } else { setWallFind(null); clearPoly(); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); setSymbolAnchor(null); setImageAnchor(null); setTextAnchor(null); setCopyReceipt(receiptAfterEsc); copyGateRef.current.begin(); setPlacingImageId(null); placeGrabRef.current = null; placeCrossSheetRef.current = null; setAlignPt(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      } else if (e.key === "Escape") { if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else if (wfMenu) { setWfMenu(null); } else if (wfSel.size) { setWfSel(new Set()); } else { setWallFind(null); clearPoly(); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); setSymbolAnchor(null); setImageAnchor(null); setTextAnchor(null); setCopyReceipt(receiptAfterEsc); copyGateRef.current.begin(); setPlacingImageId(null); placeGrabRef.current = null; placeCrossSheetRef.current = null; setAlignPt(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -4491,6 +4511,11 @@ export default function TakeoffCanvas() {
     // One-Click proposal editing: dragging a corner/edge grip, else revealing
     // handles on the region under the cursor. Both work in panel-LOCAL px.
     if (wfDragRef.current) { wallFindDragMove(e); return; }
+    if (wfBoxRef.current) {
+      const tp = wallFind && panelByKey(wallFind.key);
+      if (tp) { const raw = toImage(e.clientX, e.clientY); wfBoxRef.current = { ...wfBoxRef.current, x1: raw[0] - tp.xOffset, y1: raw[1] }; setWfBox(wfBoxRef.current); }
+      return;
+    }
     if (ocDragRef.current) { ocDragMove(e); return; }
     if (tool === "oneclick" && proposal && !panRef.current && !pendingClickRef.current) ocHoverUpdate(e);
     if (dragRef.current) {
@@ -4629,6 +4654,19 @@ export default function TakeoffCanvas() {
       return;
     }
     if (wfDragRef.current) { wfDragRef.current = null; try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ } return; }
+    if (wfBoxRef.current) {
+      const b = wfBoxRef.current; wfBoxRef.current = null; setWfBox(null);
+      try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ }
+      const x0 = Math.min(b.x0, b.x1), x1 = Math.max(b.x0, b.x1), y0 = Math.min(b.y0, b.y1), y1 = Math.max(b.y0, b.y1);
+      if (x1 - x0 < 4 / tfRef.current.scale && y1 - y0 < 4 / tfRef.current.scale) { setWfSel(new Set()); return; }   // a click, not a box
+      // a run is selected when any part of it lies in the box
+      const inBox = (w) => {
+        for (let k = 0; k <= 16; k++) { const t = k / 16, x = w.a[0] + (w.b[0] - w.a[0]) * t, y = w.a[1] + (w.b[1] - w.a[1]) * t; if (x >= x0 && x <= x1 && y >= y0 && y <= y1) return true; }
+        return false;
+      };
+      setWfSel((sel) => { const n = e.shiftKey ? new Set(sel) : new Set(); for (const w of wallFind?.walls || []) if (inBox(w)) n.add(w.id); return n; });
+      return;
+    }
     if (ocDragRef.current) { ocDragRef.current = null; bumpIdle(); try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ } return; }
     if (dragRef.current) {
       const d = dragRef.current;
@@ -5120,6 +5158,11 @@ export default function TakeoffCanvas() {
   // Orange comes last: CAD hatch and the plan's own highlights are often orange.
   const WALL_REVIEW_COLORS = ["#e6194b", "#1f5cff", "#00a651", "#f032e6", "#00b8d9", "#7b2cbf", "#9acd32", "#008080", "#b8002e", "#000080", "#8a8a00", "#8b4513", "#ff69b4", "#f58231"];
   const wfDragRef = useRef(null);   // Find walls review: dragging a run's end {id, end, other, dir}
+  const wfCondTag = (id) => String((condById[id] || conditions.find((c) => c.id === id))?.finish_tag || "").trim().toUpperCase();
+  const wfConsolidate = (cur) => consolidateWallFind(cur, wfCondTag);
+  const [wfSel, setWfSel] = useState(() => new Set());   // runs box-selected in the review
+  const wfBoxRef = useRef(null);                          // box-select drag in progress {x0, y0, x1, y1} (panel-local)
+  const [wfBox, setWfBox] = useState(null);
   const [wfMenu, setWfMenu] = useState(null);   // right-click menu on a review run: { x, y, id, line }
   const rightDownRef = useRef(null);            // where a right press started (a right-DRAG pans; a right-CLICK opens the menu)
 
@@ -5161,7 +5204,8 @@ export default function TakeoffCanvas() {
       .forEach((t, i) => { colors[t] = WALL_REVIEW_COLORS[i % WALL_REVIEW_COLORS.length]; });
     // colours the estimator picked before (per tag) win
     try { const saved = JSON.parse(localStorage.getItem("vt_wall_colors") || "{}"); for (const t of Object.keys(colors)) if (saved[t]) colors[t] = saved[t]; } catch { /* none saved */ }
-    setWallFind({ key: tp.key, walls: res.walls, map, colors, off, auto, touched: new Set(), pens: res.pens, checker: { trained: !!wm.model, n: wm.model?.n || 0, decisions: wm.decisions, offline: !!wm.offline, dropped: auto.size, doubtful } });
+    setWfSel(new Set());
+    setWallFind(wfConsolidate({ key: tp.key, walls: res.walls, map, colors, off, auto, touched: new Set(), pens: res.pens, checker: { trained: !!wm.model, n: wm.model?.n || 0, decisions: wm.decisions, offline: !!wm.offline, dropped: auto.size, doubtful } }));
     setCommitMsg(`Found ${res.walls.length} wall runs${auto.size ? ` — the wall checker dropped ${auto.size} likely non-walls` : ""}.${aiEnabled ? " The AI is reading the legend and notes and matching tags…" : ""} Map each tag to an assembly, click a run to drop or restore it, then Add.`);
     // the AI joins every run: legend & notes (cached per sheet) and plan-tag → assembly matching
     if (aiEnabled) {
@@ -5281,7 +5325,9 @@ export default function TakeoffCanvas() {
         const seen = { ...(cur.aiLook?.seen || {}) };
         for (const id of Object.keys(verdictById)) seen[id] = 1;
         const prev = cur.aiLook || {};
-        return { ...cur, walls, off, auto, aiLook: { status: "done", seen, looked: (prev.looked || 0) + Object.keys(verdictById).length, dropped: (prev.dropped || 0) + dropped, existing: (prev.existing || 0) + existing, tagged: (prev.tagged || 0) + tagged } };
+        const map2 = { ...cur.map }, colors2 = { ...cur.colors };
+        for (const w of walls) { const k = wfKey(w); if (!(k in map2)) map2[k] = ""; if (!colors2[k]) colors2[k] = WALL_REVIEW_COLORS[Object.keys(colors2).length % WALL_REVIEW_COLORS.length]; }
+        return wfConsolidate({ ...cur, walls, map: map2, colors: colors2, off, auto, aiLook: { status: "done", seen, looked: (prev.looked || 0) + Object.keys(verdictById).length, dropped: (prev.dropped || 0) + dropped, existing: (prev.existing || 0) + existing, tagged: (prev.tagged || 0) + tagged } });
       });
     } catch (e) {
       const msg = String(e?.message || e);
@@ -5308,7 +5354,7 @@ export default function TakeoffCanvas() {
         if (!cur || cur.key !== key) return cur;
         const nm = { ...cur.map }, aiMatched = { ...(cur.aiMatched || {}) };
         for (const [t, id] of got) if (t in nm && !nm[t]) { nm[t] = id; aiMatched[t] = true; }
-        return { ...cur, map: nm, aiMatched };
+        return wfConsolidate({ ...cur, map: nm, aiMatched });
       });
     } catch { /* AI unavailable — the estimator maps them by hand as before */ }
   }
@@ -5416,7 +5462,7 @@ export default function TakeoffCanvas() {
           if (!(k in map)) map[k] = k === "?" || k === "§EX" ? "" : (byTag.get(k) || "");
         }
         const legendFound = samples.map((sm) => ({ label: sm.label, meaning: sm.meaning, runs: styleCount.get(sm.label) || 0 }));
-        return { ...cur, walls, map, colors, noteLabels, off, auto, scope: { status: "done", ...res, found, legendFound, untagged, notWallPrefixes } };
+        return wfConsolidate({ ...cur, walls, map, colors, noteLabels, off, auto, scope: { status: "done", ...res, found, legendFound, untagged, notWallPrefixes } });
       });
     } catch (e) {
       setWallFind((cur) => cur && { ...cur, scope: { status: "error", error: String(e?.message || e) } });
@@ -5452,7 +5498,18 @@ export default function TakeoffCanvas() {
       const d = Math.hypot(x - w.a[0] - u * dx, y - w.a[1] - u * dy) - w.thickPx / 2;
       if (d < thr && d < bd) { bd = d; best = w; }
     }
-    if (!best) return false;
+    if (!best) {
+      // empty plan under the press: start a selection box (right-drag / Space still pans)
+      if (e && e.button === 0) {
+        wfBoxRef.current = { x0: x, y0: y, x1: x, y1: y };
+        setWfBox(wfBoxRef.current);
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* fine */ }
+        return true;
+      }
+      return false;
+    }
+    if (wfSel.size && e && !e.shiftKey) setWfSel(new Set());
+    if (e && e.shiftKey) { setWfSel((sel) => { const n = new Set(sel); if (n.has(best.id)) n.delete(best.id); else n.add(best.id); return n; }); return true; }
     setWallFind((wf) => { const off = new Set(wf.off); if (off.has(best.id)) off.delete(best.id); else off.add(best.id); const touched = new Set(wf.touched); touched.add(best.id); return { ...wf, off, touched }; });
     return true;
   }
@@ -5479,7 +5536,7 @@ export default function TakeoffCanvas() {
     const w = wallFindRunAt(toImage(e.clientX, e.clientY));
     const box = containerRef.current?.getBoundingClientRect();
     if (!w || !box) { setWfMenu(null); return; }
-    setWfMenu({ x: e.clientX - box.left, y: e.clientY - box.top, id: w.id, line: false });
+    setWfMenu({ x: e.clientX - box.left, y: e.clientY - box.top, id: w.id, line: false, sel: wfSel.has(w.id) && wfSel.size > 1 });
   }
   // the pieces of a run's wall line: same direction and thickness, on one line, end to end
   const wallLineOf = (walls, w) => {
@@ -5504,9 +5561,10 @@ export default function TakeoffCanvas() {
       const off = new Set(cur.off);
       for (const id of ids) off.delete(id);
       const touched = new Set(cur.touched); for (const id of ids) touched.add(id);
-      return { ...cur, map, colors, off, touched, walls: cur.walls.map((w) => (set.has(w.id) ? { ...w, groupOverride: key } : w)) };
+      return wfConsolidate({ ...cur, map, colors, off, touched, walls: cur.walls.map((w) => (set.has(w.id) ? { ...w, groupOverride: key } : w)) });
     });
     setWfMenu(null);
+    setWfSel(new Set());
   }
   function dropRuns(ids, drop) {
     setWallFind((cur) => {
@@ -5516,6 +5574,7 @@ export default function TakeoffCanvas() {
       return { ...cur, off, touched };
     });
     setWfMenu(null);
+    setWfSel(new Set());
   }
 
   // Stretch or trim a suggested run: the end slides along the run's own line
@@ -10891,6 +10950,13 @@ export default function TakeoffCanvas() {
                             <title>{`${w.noteKey ? `${wfLabel(w.noteKey, wallFind)} · ` : ""}${w.existing ? "existing (screened pen) · " : ""}${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${w.score != null ? ` · wall checker ${Math.round(w.score * 100)}%` : ""}${w.ai ? ` · AI: ${w.ai.wall ? `wall, ${w.ai.status}` : "not a wall"}${w.ai.why ? ` (${w.ai.why})` : ""}` : ""}${off ? (wallFind.auto?.has(w.id) && !wallFind.touched?.has(w.id) ? " · dropped by the checker (click to restore)" : " · dropped") : ""}`}</title>
                           </line>{!off && cid && w.score != null && w.score < DOUBT_BELOW && <line x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke="#111" strokeOpacity={0.75} strokeWidth={1.2 / tf.scale} strokeDasharray={`${6 / tf.scale} ${4 / tf.scale}`} pointerEvents="none" />}</g>;
                         })}
+                        {wfSel.size > 0 && wallFind.walls.filter((w) => wfSel.has(w.id)).map((w) => (
+                          <line key={"fws" + w.id} x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke="#111" strokeOpacity={0.9} strokeWidth={Math.max(w.thickPx, 3 / tf.scale) + 5 / tf.scale} fill="none" strokeLinecap="round" style={{ mixBlendMode: "multiply" }} pointerEvents="none" />
+                        ))}
+                        {wfSel.size > 0 && wallFind.walls.filter((w) => wfSel.has(w.id)).map((w) => (
+                          <line key={"fws2" + w.id} x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke={wallFind.off.has(w.id) ? "#bbb" : (wallFind.colors?.[wfKey(w)] || "#1f3fc7")} strokeWidth={Math.max(w.thickPx, 3 / tf.scale)} strokeLinecap="round" pointerEvents="none" />
+                        ))}
+                        {wfBox && <rect x={Math.min(wfBox.x0, wfBox.x1)} y={Math.min(wfBox.y0, wfBox.y1)} width={Math.abs(wfBox.x1 - wfBox.x0)} height={Math.abs(wfBox.y1 - wfBox.y0)} fill="rgba(31,92,255,0.08)" stroke="#1f5cff" strokeWidth={1.2 / tf.scale} strokeDasharray={`${5 / tf.scale} ${3 / tf.scale}`} pointerEvents="none" />}
                         {/* end handles: drag to stretch or trim a run (⇧ moves the end freely) */}
                         {tf.scale >= WF_HANDLE_SCALE && wallFind.walls.filter((w) => !wallFind.off.has(w.id) && wallFind.map[wfKey(w)]).flatMap((w) => ["a", "b"].map((end) => (
                           <circle key={`fwh${w.id}${end}`} cx={w[end][0]} cy={w[end][1]} r={3.6 / tf.scale}
@@ -11425,7 +11491,7 @@ export default function TakeoffCanvas() {
         {wallFind && wfMenu && (() => {
           const w = wallFind.walls.find((x) => x.id === wfMenu.id);
           if (!w) return null;
-          const ids = wfMenu.line ? wallLineOf(wallFind.walls, w) : [w.id];
+          const ids = wfMenu.sel ? [...wfSel] : wfMenu.line ? wallLineOf(wallFind.walls, w) : [w.id];
           const cur = wfKey(w);
           const groups = wallFindGroups(wallFind).map((g) => g.tag);
           const inReview = new Set(groups.map((g) => g.toUpperCase()));
@@ -11436,10 +11502,11 @@ export default function TakeoffCanvas() {
             <div data-find-walls-menu onPointerDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}
               style={{ position: "absolute", left: Math.min(wfMenu.x, (containerRef.current?.clientWidth || 9999) - 240), top: Math.min(wfMenu.y, (containerRef.current?.clientHeight || 9999) - 360), width: 230, maxHeight: 360, overflowY: "auto", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi + 1, padding: "6px 0" }}>
               <div style={{ padding: "2px 10px 6px", fontSize: 11.5, color: "var(--ink-muted)" }}>{wfLabel(cur, wallFind)} · {w.thickIn}" · {w.lengthFt} ft{w.tag && w.tag !== cur ? ` · plan tag ${w.tag}` : ""}</div>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 10px 6px", fontSize: 12 }}>
+              {wfMenu.sel && <div style={{ padding: "0 10px 6px", fontSize: 12, fontWeight: 600 }}>{wfSel.size} selected runs</div>}
+              {!wfMenu.sel && <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 10px 6px", fontSize: 12 }}>
                 <input type="checkbox" checked={wfMenu.line} onChange={(e) => setWfMenu({ ...wfMenu, line: e.target.checked })} />
                 Whole wall line ({wallLineOf(wallFind.walls, w).length} run{wallLineOf(wallFind.walls, w).length === 1 ? "" : "s"})
-              </label>
+              </label>}
               <div style={{ padding: "2px 10px", fontSize: 10.5, letterSpacing: 0.5, textTransform: "uppercase", opacity: 0.55 }}>Move to</div>
               {groups.filter((g) => g !== cur).map((g) => (
                 <button key={g} type="button" style={item} onClick={() => regroupRuns(ids, g)}
@@ -11470,7 +11537,24 @@ export default function TakeoffCanvas() {
           return (
             <div data-find-walls-panel style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 300, maxHeight: "60%", overflowY: "auto", padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5 }}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6 }}>Find walls — review</div>
-              <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag — each has its own colour on the plan (click a swatch to change it); skipped groups show as a pale band in their colour, runs you drop as a thin dotted line, and doubtful runs get a dashed black centre line. Click a run to drop or restore it. Zoom in and drag a run's white end dot to stretch or trim it (⇧ moves it freely). Paler runs were matched by thickness only — check them.</div>
+              {wfSel.size > 0 && (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "6px 8px", marginBottom: 8, background: "#e8efff", border: "1px solid #1f5cff" }}>
+                  <b>{wfSel.size} selected</b>
+                  <select aria-label="Move selected runs to" value="" onChange={(e) => {
+                    const v = e.target.value; if (!v) return;
+                    if (v.startsWith("cond:")) { const c = conditions.find((x) => x.id === v.slice(5)); if (c) regroupRuns([...wfSel], c.finish_tag.trim().toUpperCase(), c.id); }
+                    else regroupRuns([...wfSel], v.slice(4));
+                  }} style={{ flex: 1, minWidth: 100 }}>
+                    <option value="">Move to…</option>
+                    {groups.map((g) => <option key={g.tag} value={`grp:${g.tag}`}>{wfLabel(g.tag, wallFind)}{wallFind.map[g.tag] ? "" : " (skipped)"}</option>)}
+                    {conditions.filter((c) => c.finish_tag && !groups.some((g) => g.tag === c.finish_tag.trim().toUpperCase())).map((c) => <option key={c.id} value={`cond:${c.id}`}>{c.finish_tag}{c.label ? ` — ${c.label}` : ""}</option>)}
+                  </select>
+                  <button type="button" onClick={() => dropRuns([...wfSel], true)}>Drop</button>
+                  <button type="button" onClick={() => dropRuns([...wfSel], false)}>Restore</button>
+                  <button type="button" onClick={() => setWfSel(new Set())}>Clear</button>
+                </div>
+              )}
+              <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag — each has its own colour on the plan (click a swatch to change it); skipped groups show as a pale band in their colour, runs you drop as a thin dotted line, and doubtful runs get a dashed black centre line. Click a run to drop or restore it. Drag a box on empty plan to select several runs (⇧ adds), then move or drop them together; right-click a run for its own menu. Zoom in and drag a run's white end dot to stretch or trim it (⇧ moves it freely). Paler runs were matched by thickness only — check them.</div>
               <div style={{ fontSize: 11.5, marginBottom: 8, padding: "6px 8px", background: "var(--paper)", border: "1px solid var(--ink-faint)" }}>
                 {wallFind.checker?.trained
                   ? <>Wall checker (learned from {wallFind.checker.n} reviews{wallFind.checker.offline ? ", offline copy" : ""}): dropped <b>{wallFind.checker.dropped}</b> likely non-walls (grey dashes — click to restore); <b>{wallFind.checker.doubtful}</b> doubtful runs are drawn dashed.</>
@@ -11537,7 +11621,7 @@ export default function TakeoffCanvas() {
                   <span title={wfLabel(g.tag, wallFind)} style={{ minWidth: 54, maxWidth: 110, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...(g.tag.startsWith("§N") ? { background: "#fff3b0", padding: "0 3px" } : {}) }}>{wfLabel(g.tag, wallFind)}</span>
                   <span style={{ minWidth: 70, color: "var(--ink-secondary)", fontVariantNumeric: "tabular-nums" }}>{g.n} · {fl(g.lf, 0)}</span>
                   {wallFind.aiMatched?.[g.tag] && wallFind.map[g.tag] && <span title="Matched to this assembly by the AI — check it" style={{ fontSize: 12 }}>✨</span>}
-                  <select aria-label={`Assembly for ${wfLabel(g.tag, wallFind)}`} value={wallFind.map[g.tag] || ""} onChange={(e) => { const v = e.target.value; setWallFind((wf) => ({ ...wf, map: { ...wf.map, [g.tag]: v }, aiMatched: { ...(wf.aiMatched || {}), [g.tag]: false } })); }} style={{ flex: 1, minWidth: 0 }}>
+                  <select aria-label={`Assembly for ${wfLabel(g.tag, wallFind)}`} value={wallFind.map[g.tag] || ""} onChange={(e) => { const v = e.target.value; setWallFind((wf) => wfConsolidate({ ...wf, map: { ...wf.map, [g.tag]: v }, aiMatched: { ...(wf.aiMatched || {}), [g.tag]: false } })); }} style={{ flex: 1, minWidth: 0 }}>
                     <option value="">Skip</option>
                     {opts.map((c) => <option key={c.id} value={c.id}>{c.finish_tag}{c.label ? ` — ${c.label}` : ""}</option>)}
                   </select>
