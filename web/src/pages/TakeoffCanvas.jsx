@@ -5162,7 +5162,12 @@ export default function TakeoffCanvas() {
     // colours the estimator picked before (per tag) win
     try { const saved = JSON.parse(localStorage.getItem("vt_wall_colors") || "{}"); for (const t of Object.keys(colors)) if (saved[t]) colors[t] = saved[t]; } catch { /* none saved */ }
     setWallFind({ key: tp.key, walls: res.walls, map, colors, off, auto, touched: new Set(), pens: res.pens, checker: { trained: !!wm.model, n: wm.model?.n || 0, decisions: wm.decisions, offline: !!wm.offline, dropped: auto.size, doubtful } });
-    setCommitMsg(`Found ${res.walls.length} wall runs${auto.size ? ` — the wall checker dropped ${auto.size} likely non-walls` : ""}. Map each tag to an assembly, click a run to drop or restore it, then Add.`);
+    setCommitMsg(`Found ${res.walls.length} wall runs${auto.size ? ` — the wall checker dropped ${auto.size} likely non-walls` : ""}.${aiEnabled ? " The AI is reading the legend and notes and matching tags…" : ""} Map each tag to an assembly, click a run to drop or restore it, then Add.`);
+    // the AI joins every run: legend & notes (cached per sheet) and plan-tag → assembly matching
+    if (aiEnabled) {
+      checkScopeNotes({ key: tp.key, walls: res.walls });
+      matchTagsWithAI(tp.key, res.walls, map);
+    }
   }
   const wallFindGroups = (wf) => {
     const g = new Map();
@@ -5176,14 +5181,39 @@ export default function TakeoffCanvas() {
     return [...g.values()].sort((p, q) => rank(p.tag) - rank(q.tag) || q.lf - p.lf);
   };
 
+  // plan tags that matched no assembly by name → the AI pairs them with the
+  // project's assemblies (descriptions, thickness, the partition schedule)
+  async function matchTagsWithAI(key, walls, map) {
+    const loose = Object.keys(map).filter((t) => t !== "?" && !t.startsWith("§") && !map[t]);
+    if (!loose.length || !conditions.length) return;
+    const stats = new Map();
+    for (const w of walls) { if (!w.tag || !loose.includes(w.tag)) continue; const s0 = stats.get(w.tag) || { runs: 0, th: [] }; s0.runs++; s0.th.push(w.thickIn); stats.set(w.tag, s0); }
+    const tags = [...stats].map(([tag, s0]) => ({ tag, runs: s0.runs, thick_in: +(s0.th.sort((a, b) => a - b)[s0.th.length >> 1] || 0).toFixed(1) }));
+    if (!tags.length) return;
+    const schedule = [...schedCacheRef.current.values()].filter((h) => h.score > 0).sort((a, b) => b.score - a.score)[0]?.text || "";
+    const assemblies = conditions.filter((c) => c.finish_tag).map((c) => ({ id: c.id, tag: c.finish_tag, desc: [c.label, c.category, c.spec?.description].filter(Boolean).join(" · ") }));
+    try {
+      const r = await vanguardApi("POST", "/api/ai/map-tags", { json: { tags, assemblies, schedule } });
+      const got = Object.entries(r.map || {}).filter(([, id]) => id && condById[id]);
+      if (!got.length) return;
+      setWallFind((cur) => {
+        if (!cur || cur.key !== key) return cur;
+        const nm = { ...cur.map }, aiMatched = { ...(cur.aiMatched || {}) };
+        for (const [t, id] of got) if (t in nm && !nm[t]) { nm[t] = id; aiMatched[t] = true; }
+        return { ...cur, map: nm, aiMatched };
+      });
+    } catch { /* AI unavailable — the estimator maps them by hand as before */ }
+  }
+
   // ── Find walls: scope from the notes ─────────────────────────────────────
   // The AI reads this sheet's notes / legend / keynotes (and the set's general-
   // notes sheets) for what puts existing walls in scope or takes walls out; each
   // note's keynote mark or room is then found on the plan and its walls become a
   // highlighted group in the review.
   const notesCacheRef = useRef(new Map());   // sheet key → { score, text, label }
-  async function checkScopeNotes() {
-    const wf = wallFind;
+  const scopeResultRef = useRef(new Map());  // sheet key → the AI's legend & notes answer (one read per sheet per session)
+  async function checkScopeNotes(given, { force = false } = {}) {
+    const wf = given || wallFind;
     if (!wf) return;
     if (!aiEnabled) { setCommitMsg("Connect your AI first — an admin can add it under Team → AI settings."); return; }
     const tp = panelByKey(wf.key), upp = uppFor(wf.key);
@@ -5191,6 +5221,8 @@ export default function TakeoffCanvas() {
     const toToks = (spans) => spans.map((sp) => ({ str: sp.str, x: sp.x0, y: sp.y1, h: Math.max(1, sp.y1 - sp.y0), w: sp.x1 - sp.x0 }));
     try {
       const spans = await ensureTextSpans(wf.key);
+      let res = force ? null : scopeResultRef.current.get(wf.key);
+      if (!res) {
       const parts = [];
       const own = notesText(toToks(spans), 6000);
       if (own) parts.push(`[THIS SHEET — ${currentSheetLabel()}]\n${own}`);
@@ -5223,7 +5255,9 @@ export default function TakeoffCanvas() {
       setWallFind((cur) => cur && { ...cur, scope: { status: "reading", progress: "the AI is reading the notes…" } });
       const r = await vanguardApi("POST", "/api/ai/read-notes", { json: { text, source: currentSheetLabel() } });
       if (!r.result) throw new Error(r.error || "The AI didn't answer in the expected form.");
-      const res = r.result;
+      res = r.result;
+      scopeResultRef.current.set(wf.key, res);
+      }
       const located = locateNotes({ segs: vectorSegsRef.current.get(wf.key) || [], meta: segMetaRef.current.get(wf.key), texts: spans, pxPerFt: upp ? 1 / upp : 18 }, wf.walls, res.notes);
       const byTag = new Map(conditions.filter((c) => c.finish_tag).map((c) => [c.finish_tag.trim().toUpperCase(), c.id]));
       // the legend: each wall style's sample graphic, measured on this sheet
@@ -11340,10 +11374,10 @@ export default function TakeoffCanvas() {
                 return (
                   <div style={{ fontSize: 11.5, marginBottom: 8, padding: "6px 8px", border: "1px solid var(--ink-faint)", background: "#fffbe6" }}>
                     {nEx > 0 && <div style={{ marginBottom: 4 }}><b>{nEx}</b> runs are drawn in a lighter (screened) pen — likely <b>existing</b>, grouped as “Existing” and skipped unless you pick an assembly.</div>}
-                    {!sc && <button type="button" onClick={checkScopeNotes} style={{ padding: "4px 8px", border: "1px solid var(--ink-faint)", background: "#fff", cursor: "pointer", fontWeight: 600 }}>✨ Read the legend &amp; notes</button>}
+                    {!sc && <button type="button" onClick={() => checkScopeNotes()} style={{ padding: "4px 8px", border: "1px solid var(--ink-faint)", background: "#fff", cursor: "pointer", fontWeight: 600 }}>✨ Read the legend &amp; notes</button>}
                     {!sc && <span style={{ color: "var(--ink-muted)" }}> — the AI reads the symbol/wall legend (which line style is new, existing or demolished; which marks are door tags) and the notes and keynotes for existing walls you do work on, then applies it to these runs.</span>}
                     {sc?.status === "reading" && <span>Reading the notes… <span style={{ color: "var(--ink-muted)" }}>{sc.progress}</span></span>}
-                    {sc?.status === "error" && <span style={{ color: "var(--c-danger)" }}>{sc.error} <button type="button" onClick={checkScopeNotes}>Try again</button></span>}
+                    {sc?.status === "error" && <span style={{ color: "var(--c-danger)" }}>{sc.error} <button type="button" onClick={() => checkScopeNotes(null, { force: true })}>Try again</button></span>}
                     {sc?.status === "done" && sc.none && <span>No scope notes found in this set's text.</span>}
                     {sc?.status === "done" && !sc.none && (<>
                       <div><b>Existing walls in scope: {sc.existing_walls_in_scope === "yes" ? "yes" : sc.existing_walls_in_scope === "no" ? "no" : "unclear"}</b>{sc.reason ? ` — ${sc.reason}` : ""}</div>
@@ -11361,6 +11395,7 @@ export default function TakeoffCanvas() {
                         </div>
                       ))}
                       {!(sc.found || []).some((n) => n.action !== "info") && <div style={{ color: "var(--ink-muted)" }}>No notes that change wall scope.</div>}
+                      <button type="button" onClick={() => checkScopeNotes(null, { force: true })} style={{ marginTop: 4, padding: "2px 6px", border: "1px solid var(--ink-faint)", background: "#fff", cursor: "pointer", fontSize: 11 }}>Read again</button>
                     </>)}
                   </div>
                 );
@@ -11379,7 +11414,8 @@ export default function TakeoffCanvas() {
                   </label>
                   <span title={wfLabel(g.tag, wallFind)} style={{ minWidth: 54, maxWidth: 110, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...(g.tag.startsWith("§N") ? { background: "#fff3b0", padding: "0 3px" } : {}) }}>{wfLabel(g.tag, wallFind)}</span>
                   <span style={{ minWidth: 70, color: "var(--ink-secondary)", fontVariantNumeric: "tabular-nums" }}>{g.n} · {fl(g.lf, 0)}</span>
-                  <select aria-label={`Assembly for ${wfLabel(g.tag, wallFind)}`} value={wallFind.map[g.tag] || ""} onChange={(e) => { const v = e.target.value; setWallFind((wf) => ({ ...wf, map: { ...wf.map, [g.tag]: v } })); }} style={{ flex: 1, minWidth: 0 }}>
+                  {wallFind.aiMatched?.[g.tag] && wallFind.map[g.tag] && <span title="Matched to this assembly by the AI — check it" style={{ fontSize: 12 }}>✨</span>}
+                  <select aria-label={`Assembly for ${wfLabel(g.tag, wallFind)}`} value={wallFind.map[g.tag] || ""} onChange={(e) => { const v = e.target.value; setWallFind((wf) => ({ ...wf, map: { ...wf.map, [g.tag]: v }, aiMatched: { ...(wf.aiMatched || {}), [g.tag]: false } })); }} style={{ flex: 1, minWidth: 0 }}>
                     <option value="">Skip</option>
                     {opts.map((c) => <option key={c.id} value={c.id}>{c.finish_tag}{c.label ? ` — ${c.label}` : ""}</option>)}
                   </select>

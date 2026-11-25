@@ -90,6 +90,12 @@ tag symbols (wall type tags, door tags, keynotes, room tags), so the wall finder
 List only notes that change what drywall work is done to WALLS: work on existing walls (furring, patching,
 new board, skim), existing walls excluded or by others, demolition, or new walls the plan doesn't tag.
 Skip notes about doors, MEP, flooring, millwork and general conditions. Do not invent notes."""
+MAP_TAGS_PROMPT = """A drywall estimator's wall finder read these WALL TYPE TAGS off a floor plan. Match each plan tag to the
+project's ASSEMBLY that it means, using the tags, the assemblies' names and descriptions, the measured wall
+thickness and the partition schedule text if given. Plan tags and assembly names often differ in format
+(e.g. plan "WP-2" = assembly "W2" or "Type 2"; "1A" = "P-1A"). Return null for a tag that is not a wall type
+(door, window, room or equipment tags such as D2, W/A, 101) or that matches no assembly. Never guess wildly.
+Answer ONLY with a JSON object mapping each plan tag to an assembly id or null, e.g. {"WP-2": "cnd_ab12", "D2": null}."""
 EMAIL_KEYS = ("smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from", "public_url")
 INVITE_DAYS = 7
 MAX_JSON = 64 * 1024 * 1024        # takeoff payload / library JSON
@@ -768,6 +774,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"ok": True, "models": [m_["id"] for m_ in models]})
         if p == ["ai", "read-schedule"] and m == "POST":
             return self.ai_read_schedule(c, me)
+        if p == ["ai", "map-tags"] and m == "POST":
+            return self.ai_map_tags(c, me)
         if p == ["ai", "read-notes"] and m == "POST":
             return self.ai_read_notes(c, me)
         if p == ["ai", "feedback"] and m == "POST":
@@ -997,6 +1005,39 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": [], "raw": text[:2000],
                                         "error": "The AI answered, but not with a list of wall types. Try a tighter crop of just the schedule."})
         return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": walls})
+
+    def ai_map_tags(self, c, me):
+        """Plan wall tags → the project's assemblies (ids), when their names differ."""
+        cfg = get_settings(c)
+        if not ai_ready(cfg):
+            raise ApiError(400, "AI isn't connected yet.")
+        body = self.read_json()
+        tags = [t for t in (body.get("tags") or []) if isinstance(t, dict) and t.get("tag")][:60]
+        asm = [a for a in (body.get("assemblies") or []) if isinstance(a, dict) and a.get("id")][:200]
+        if not tags or not asm:
+            return self.send_json(200, {"map": {}})
+        ids = {str(a["id"]) for a in asm}
+        lines = ["PLAN TAGS:"] + [f'- {str(t["tag"])[:20]} (measured {t.get("thick_in", "?")}" thick, {t.get("runs", "?")} runs)' for t in tags]
+        lines += ["", "ASSEMBLIES:"] + [f'- id {str(a["id"])[:40]}: {str(a.get("tag") or "")[:30]} — {str(a.get("desc") or "")[:160]}' for a in asm]
+        sched = str(body.get("schedule") or "")[:6000]
+        if sched:
+            lines += ["", "PARTITION SCHEDULE TEXT:", sched]
+        model = ai_model(cfg)
+        t0 = time.time()
+        out = ai_request(cfg, "/chat/completions", {
+            "model": model, "temperature": 0, "max_tokens": 1200,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "messages": [{"role": "user", "content": MAP_TAGS_PROMPT + "\n\n" + "\n".join(lines)}],
+        })
+        ms = int((time.time() - t0) * 1000)
+        reply = ((out.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        if isinstance(reply, list):
+            reply = "".join(part.get("text", "") for part in reply if isinstance(part, dict))
+        result = extract_json_object(reply) or {}
+        clean = {str(k)[:20]: (str(v) if v is not None and str(v) in ids else None) for k, v in result.items()}
+        c.execute("INSERT INTO ai_log (kind, user_id, image_hash, model, raw, result, ms, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                  ("map_tags", me["id"], None, model, reply, json.dumps(clean), ms, time.time()))
+        return self.send_json(200, {"map": clean, "ms": ms})
 
     def ai_read_notes(self, c, me):
         """Drawing notes/legends/keynotes (text) → which walls are in scope, as JSON.

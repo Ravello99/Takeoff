@@ -320,6 +320,11 @@ class ServerTest(unittest.TestCase):
             self.assertEqual([e["meaning"] for e in out["result"]["legend"]], ["existing_wall", "door_tag"])
             self.assertEqual(out["result"]["legend"][1]["prefix"], "D")
             self.assertEqual(admin.req("POST", "/api/ai/read-notes", {"text": "x"})[0], 400)
+            # plan tags → assemblies: unknown ids are refused
+            seen["reply"] = '{"WP-2": "cnd_w2", "D2": null, "WP-9": "cnd_made_up"}'
+            s, out, _ = admin.req("POST", "/api/ai/map-tags", {"tags": [{"tag": "WP-2", "thick_in": 4.9}, {"tag": "D2"}, {"tag": "WP-9"}],
+                                                              "assemblies": [{"id": "cnd_w2", "tag": "W2", "desc": "3-5/8 studs acoustic"}]})
+            self.assertEqual(out["map"], {"WP-2": "cnd_w2", "D2": None, "WP-9": None})
             # wrong image type refused
             self.assertEqual(admin.req("POST", "/api/ai/read-schedule", {"image": "data:text/plain;base64,aGk="})[0], 400)
         finally:
