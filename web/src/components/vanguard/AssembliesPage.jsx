@@ -15,6 +15,8 @@ import { LAYER_OPTIONS, STUD_OC_OPTIONS } from "../../lib/assembly.js";
 import { ColorSwatch, PALETTE } from "../hatches.jsx";
 import { LABOR_UNITS, guessLaborUnit, laborSummary } from "../../lib/labor.js";
 import { money } from "../../lib/materialCatalog.js";
+import { uniqueTags } from "../../lib/aiSchedule.js";
+import ScheduleReader from "./ScheduleReader.jsx";
 import { CATEGORIES, categoryOf, groupByCategory } from "../../lib/categories.js";
 import "../../styles/vanguardAssemblies.css";
 
@@ -77,6 +79,9 @@ export default function AssembliesPage() {
   const [dragOver, setDragOver] = useState(false);
   const [rowDrag, setRowDrag] = useState(null);
   const [newMat, setNewMat] = useState(null);
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const [reading, setReading] = useState(false);
+  useEffect(() => { api("GET", "/api/status").then((st) => setAiEnabled(!!st.ai_enabled), () => {}); }, []);
   const saveTimer = useRef({});
 
   useEffect(() => {
@@ -148,8 +153,15 @@ export default function AssembliesPage() {
           <h1>Assemblies</h1>
           <p className="vp-muted">Build your wall, ceiling and trim assemblies once. Every new project starts with these. <span className="va-status">{status}</span></p>
         </div>
+        <div className="vp-row">
+          {aiEnabled
+            ? <button className="vp-btn vp-primary" onClick={() => setReading(true)}>✨ Read schedule with AI</button>
+            : <span className="vp-muted vp-small">Connect AI on the Team page to read wall schedules automatically.</span>}
+        </div>
         {error && <p className="vp-error">{error}</p>}
       </div>
+      {reading && <ScheduleReader onClose={() => setReading(false)}
+        onAdd={(list) => { const added = uniqueTags(list, templates); updateTemplates([...templates, ...added]); setSelected(templates.length); setReading(false); setStatus(`Added ${added.length} assemblies from the schedule`); }} />}
 
       {templates.length === 0 && (
         <div className="va-banner">

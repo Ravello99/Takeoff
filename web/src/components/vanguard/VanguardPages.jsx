@@ -410,6 +410,62 @@ function EmailSettings({ onChanged }) {
   );
 }
 
+function AISettings() {
+  const [cfg, setCfg] = useState(null);
+  const [f, setF] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [log, setLog] = useState(null);
+  const load = useCallback(() => Promise.all([api("GET", "/api/settings/ai"), api("GET", "/api/ai/log")]).then(([c, l]) => {
+    setCfg(c); setLog(l);
+    setF({ ai_base_url: c.ai_base_url, ai_api_key: "", ai_model: c.ai_model });
+    setOpen(!c.configured);
+  }), []);
+  useEffect(() => { load(); }, [load]);
+  const save = useSubmit(async () => {
+    setMsg("");
+    await api("PUT", "/api/settings/ai", { json: f });
+    await load();
+    setMsg("Saved. Click Test connection to check it.");
+  });
+  const test = useSubmit(async () => {
+    setMsg("");
+    const r = await api("POST", "/api/settings/ai/test");
+    setMsg(`Connected. Model${r.models.length === 1 ? "" : "s"}: ${r.models.join(", ") || "none listed"}`);
+  });
+  if (!cfg || !f) return null;
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  return (
+    <section className="vp-panel">
+      <div className="vp-panel-head">
+        <h2>AI</h2>
+        <span className={cfg.configured ? "vp-pill vp-pill-ok" : "vp-pill"}>{cfg.configured ? "Connected" : "Not connected"}</span>
+        {log && log.total > 0 && <span className="vp-muted vp-small">{log.total} AI answers saved · {log.reviewed} reviewed (training data)</span>}
+        <button className="vp-btn vp-ghost" onClick={() => setOpen((v) => !v)}>{open ? "Hide settings" : "Settings"}</button>
+      </div>
+      {open && (
+        <form className="vp-form vp-mailform" onSubmit={save.submit}>
+          <p className="vp-muted vp-small">
+            Any OpenAI-compatible server works. <strong>RunPod Pod running vLLM:</strong> <code>https://POD-ID-8000.proxy.runpod.net/v1</code> with the
+            {" "}<code>--api-key</code> you started vLLM with. <strong>RunPod Serverless:</strong> <code>https://api.runpod.ai/v2/ENDPOINT-ID/openai/v1</code> with your RunPod API key.
+          </p>
+          <div className="vp-mailgrid">
+            <Field label="Server address" value={f.ai_base_url} onChange={set("ai_base_url")} placeholder="https://abc123-8000.proxy.runpod.net/v1" />
+            <Field label={cfg.has_key ? "API key (leave blank to keep)" : "API key"} type="password" value={f.ai_api_key} onChange={set("ai_api_key")} autoComplete="new-password" />
+            <Field label="Model (optional — blank uses the server's model)" value={f.ai_model} onChange={set("ai_model")} placeholder="Qwen/Qwen3.5-9B" />
+          </div>
+          {(save.error || test.error) && <p className="vp-error">{save.error || test.error}</p>}
+          {msg && <p className="vp-ok">{msg}</p>}
+          <div className="vp-row">
+            <button type="button" className="vp-btn" disabled={test.busy || !cfg.configured} onClick={test.submit}>{test.busy ? "Testing…" : "Test connection"}</button>
+            <button className="vp-btn vp-primary" disabled={save.busy}>Save</button>
+          </div>
+        </form>
+      )}
+    </section>
+  );
+}
+
 function TeamPage({ user, emailEnabled, onEmailChanged }) {
   const [users, setUsers] = useState([]);
   const [invites, setInvites] = useState([]);
@@ -513,6 +569,7 @@ function TeamPage({ user, emailEnabled, onEmailChanged }) {
       </section>
 
       <EmailSettings onChanged={onEmailChanged} />
+      <AISettings />
     </main>
   );
 }

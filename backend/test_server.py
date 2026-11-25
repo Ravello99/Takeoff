@@ -245,6 +245,65 @@ class ServerTest(unittest.TestCase):
         finally:
             server.send_mail = real
 
+    def test_ai_flow(self):
+        # a stand-in for vLLM's OpenAI-compatible server
+        import base64
+        from http.server import BaseHTTPRequestHandler
+        seen = {}
+        class Fake(BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def _send(self, obj):
+                b = json.dumps(obj).encode()
+                self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+            def do_GET(self):
+                seen["auth"] = self.headers.get("Authorization")
+                self._send({"data": [{"id": "Qwen/Qwen3.5-9B"}]})
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                seen["body"] = body
+                reply = seen.get("reply", '```json\n[{"tag": "1A", "stud_size": "3-5/8\\"", "stud_gauge": "20ga", "stud_oc": 16, "layers_per_side": 1, "sides": 2, "height": "to deck"}]\n```')
+                self._send({"choices": [{"message": {"content": reply}}]})
+        fake = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+        threading.Thread(target=fake.serve_forever, daemon=True).start()
+        try:
+            admin = Client(self.port)
+            admin.req("POST", "/api/setup", {"name": "A", "email": "ai@v.ca", "password": "correct horse"})
+            img = "data:image/png;base64," + base64.b64encode(b"\x89PNG fake image").decode()
+            # not configured yet → clear message
+            s, out, _ = admin.req("POST", "/api/ai/read-schedule", {"image": img})
+            self.assertEqual(s, 400)
+            self.assertFalse(admin.req("GET", "/api/status")[1]["ai_enabled"])
+            self.assertEqual(admin.req("PUT", "/api/settings/ai", {"ai_base_url": "ftp://x"})[0], 400)
+            base = f"http://127.0.0.1:{fake.server_address[1]}/v1"
+            self.assertEqual(admin.req("PUT", "/api/settings/ai", {"ai_base_url": base, "ai_api_key": "k-secret"})[0], 200)
+            s, cfg, _ = admin.req("GET", "/api/settings/ai")
+            self.assertTrue(cfg["has_key"] and "ai_api_key" not in cfg)
+            s, out, _ = admin.req("POST", "/api/settings/ai/test")
+            self.assertEqual((s, out["models"]), (200, ["Qwen/Qwen3.5-9B"]))
+            self.assertEqual(seen["auth"], "Bearer k-secret")   # key stays server-side
+            self.assertTrue(admin.req("GET", "/api/status")[1]["ai_enabled"])
+            # read a schedule: fenced JSON is parsed, image + answer logged
+            s, out, _ = admin.req("POST", "/api/ai/read-schedule", {"image": img, "hint": "all walls to deck"})
+            self.assertEqual((s, out["walls"][0]["tag"], out["model"]), (200, "1A", "Qwen/Qwen3.5-9B"))
+            sent = seen["body"]["messages"][0]["content"]
+            self.assertEqual(sent[0]["image_url"]["url"], img)
+            self.assertIn("all walls to deck", sent[1]["text"])
+            self.assertTrue(server.Handler.app.blob_path(hashlib.sha256(b"\x89PNG fake image").hexdigest()).exists())
+            # corrections recorded against the result
+            self.assertEqual(admin.req("POST", "/api/ai/feedback", {"log_id": out["log_id"], "final": [{"tag": "1A", "stud_gauge": "25ga"}]})[0], 200)
+            # a bad answer is reported and still logged
+            seen["reply"] = "Sorry, I can't read that."
+            s, bad, _ = admin.req("POST", "/api/ai/read-schedule", {"image": img})
+            self.assertEqual((s, bad["walls"]), (200, []))
+            self.assertIn("not with a list", bad["error"])
+            s, log, _ = admin.req("GET", "/api/ai/log")
+            self.assertEqual((log["total"], log["reviewed"]), (2, 1))
+            # wrong image type refused
+            self.assertEqual(admin.req("POST", "/api/ai/read-schedule", {"image": "data:text/plain;base64,aGk="})[0], 400)
+        finally:
+            fake.shutdown(); fake.server_close()
+
     def test_lockout(self):
         c = Client(self.port)
         for _ in range(5):

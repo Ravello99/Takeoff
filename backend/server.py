@@ -42,6 +42,26 @@ from pathlib import Path
 
 SESSION_DAYS = 30
 RESET_HOURS = 1
+AI_KEYS = ("ai_base_url", "ai_api_key", "ai_model")
+AI_TIMEOUT = 240          # first call after a cold start loads the model
+SCHEDULE_PROMPT = """You are reading a PARTITION (WALL TYPE) SCHEDULE or wall-type legend from a commercial construction drawing.
+List EVERY wall type shown. Return ONLY a JSON array, no prose, no markdown. Each item:
+{"tag": "wall type mark exactly as shown, e.g. 1A, W3, P-2",
+ "description": "the schedule's own description in one line",
+ "stud_size": "e.g. 3-5/8\" or 6\" or 2-1/2\" C-H, or \"\" if none",
+ "stud_gauge": "e.g. 20ga, 25ga, or \"\"",
+ "stud_oc": number in inches (12, 16, 19.2, 24) or null,
+ "board": "board type, e.g. 5/8\" Type X",
+ "layers_per_side": number or null,
+ "sides": 1 or 2 (sides that get board),
+ "height": "to deck" or "above ceiling" or the text shown,
+ "fire_rating": "e.g. 1 HR, 2 HR, or \"\"",
+ "insulation": "e.g. 3-1/2\" sound batt, or \"\"",
+ "stc": "STC value if shown, else \"\"",
+ "shaft_wall": true or false,
+ "furring": true or false,
+ "notes": "anything else important"}
+Use null or "" when the schedule doesn't say. Do not invent wall types."""
 EMAIL_KEYS = ("smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from", "public_url")
 INVITE_DAYS = 7
 MAX_JSON = 64 * 1024 * 1024        # takeoff payload / library JSON
@@ -76,6 +96,9 @@ CREATE TABLE IF NOT EXISTS pdf_revs (
   ts REAL NOT NULL, PRIMARY KEY (project_id, name, rev));
 CREATE TABLE IF NOT EXISTS library (kind TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS ai_log (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, user_id INTEGER, image_hash TEXT, model TEXT,
+  raw TEXT, result TEXT, final TEXT, ms INTEGER, created_at REAL NOT NULL, reviewed_at REAL);
 CREATE TABLE IF NOT EXISTS resets (
   token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at REAL NOT NULL);
 """
@@ -155,6 +178,53 @@ def send_mail(cfg: dict, to: str, subject: str, text: str, html: str | None = No
             s.starttls(context=ctx)
             s.login(user, password)
             s.send_message(msg)
+
+
+# ── AI (any OpenAI-compatible endpoint: vLLM on a RunPod Pod or Serverless) ──
+def ai_ready(cfg: dict) -> bool:
+    return bool(cfg.get("ai_base_url"))
+
+
+def ai_request(cfg: dict, path: str, body: dict | None = None, timeout: int = AI_TIMEOUT) -> dict:
+    """GET/POST JSON to the configured endpoint, e.g. https://<pod>-8000.proxy.runpod.net/v1"""
+    import urllib.request
+    import urllib.error
+    url = cfg["ai_base_url"].rstrip("/") + path
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET",
+                                 headers={"Content-Type": "application/json", "Accept": "application/json",
+                                          **({"Authorization": f"Bearer {cfg['ai_api_key']}"} if cfg.get("ai_api_key") else {})})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return json.loads(res.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        detail = e.read()[:300].decode("utf-8", "replace")
+        raise ApiError(502, f"The AI server answered {e.code}: {detail or e.reason}")
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise ApiError(502, f"Couldn't reach the AI server ({getattr(e, 'reason', e)}). Is the Pod running?")
+
+
+def ai_model(cfg: dict) -> str:
+    if cfg.get("ai_model"):
+        return cfg["ai_model"]
+    models = ai_request(cfg, "/models", timeout=30).get("data") or []
+    if not models:
+        raise ApiError(502, "The AI server didn't list any models.")
+    return models[0]["id"]
+
+
+def extract_json_array(text: str):
+    """Pull the JSON array out of a model reply (tolerates ```json fences and chatter)."""
+    t = (text or "").strip()
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t, flags=re.S)
+    start, end = t.find("["), t.rfind("]")
+    if start < 0 or end <= start:
+        return None
+    try:
+        v = json.loads(t[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    return v if isinstance(v, list) else None
 
 
 def mail_html(heading: str, body: str, button: str, url: str) -> str:
@@ -370,7 +440,7 @@ class Handler(BaseHTTPRequestHandler):
             n = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
             u = self.current_user(c)
             return self.send_json(200, {"server": True, "setup_needed": n == 0, "user": user_json(u) if u else None,
-                                        "email_enabled": email_ready(get_settings(c))})
+                                        "email_enabled": email_ready(get_settings(c)), "ai_enabled": ai_ready(get_settings(c))})
 
         if p == ["setup"] and m == "POST":
             body = self.read_json()
@@ -550,6 +620,46 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 raise ApiError(400, f"The mail server refused it: {type(e).__name__}: {e}")
             return self.send_json(200, {"ok": True, "to": admin["email"]})
+        if p == ["settings", "ai"] and m == "GET":
+            self.require_admin(c)
+            cfg = get_settings(c)
+            return self.send_json(200, {"ai_base_url": cfg.get("ai_base_url", ""), "ai_model": cfg.get("ai_model", ""),
+                                        "has_key": bool(cfg.get("ai_api_key")), "configured": ai_ready(cfg)})
+        if p == ["settings", "ai"] and m == "PUT":
+            self.require_admin(c)
+            body = self.read_json()
+            for k in AI_KEYS:
+                if k not in body:
+                    continue
+                v = str(body[k] or "").strip()
+                if k == "ai_api_key" and not v:
+                    continue   # blank = keep the saved key
+                if k == "ai_base_url" and v and not re.match(r"^https?://", v):
+                    raise ApiError(400, "The address must start with https:// (e.g. https://abc123-8000.proxy.runpod.net/v1).")
+                c.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+            return self.send_json(200, {"ok": True, "configured": ai_ready(get_settings(c))})
+        if p == ["settings", "ai", "test"] and m == "POST":
+            self.require_admin(c)
+            cfg = get_settings(c)
+            if not ai_ready(cfg):
+                raise ApiError(400, "Enter the AI server address first.")
+            models = ai_request(cfg, "/models", timeout=60).get("data") or []
+            return self.send_json(200, {"ok": True, "models": [m_["id"] for m_ in models]})
+        if p == ["ai", "read-schedule"] and m == "POST":
+            return self.ai_read_schedule(c, me)
+        if p == ["ai", "feedback"] and m == "POST":
+            body = self.read_json()
+            log_id = int(body.get("log_id") or 0)
+            final = body.get("final")
+            if not c.execute("SELECT 1 FROM ai_log WHERE id=?", (log_id,)).fetchone():
+                raise ApiError(404, "No such AI result.")
+            c.execute("UPDATE ai_log SET final=?, reviewed_at=? WHERE id=?", (json.dumps(final), time.time(), log_id))
+            return self.send_json(200, {"ok": True})
+        if p == ["ai", "log"] and m == "GET":
+            self.require_admin(c)
+            rows = c.execute("SELECT id, kind, model, ms, created_at, reviewed_at, (final IS NOT NULL) AS corrected FROM ai_log ORDER BY id DESC LIMIT 200").fetchall()
+            total = c.execute("SELECT COUNT(*), SUM(final IS NOT NULL) FROM ai_log").fetchone()
+            return self.send_json(200, {"items": [dict(r_) for r_ in rows], "total": total[0], "reviewed": total[1] or 0})
         if p == ["invites"] and m == "GET":
             self.require_admin(c)
             rows = c.execute("SELECT email, role, created_at, expires_at, token_hash FROM invites WHERE expires_at>? ORDER BY created_at DESC", (time.time(),)).fetchall()
@@ -691,6 +801,48 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, {"ok": True})
 
         raise ApiError(404, "Not found.")
+
+    def ai_read_schedule(self, c, me):
+        """Image of a wall-type schedule → wall types as JSON, via the configured model.
+        The image, the model's answer and (later) the estimator's corrections are kept
+        in ai_log: that is the training data for fine-tuning a Vanguard model."""
+        import base64
+        cfg = get_settings(c)
+        if not ai_ready(cfg):
+            raise ApiError(400, "AI isn't connected yet. An admin can add it on the Team page.")
+        body = self.read_json()
+        img = str(body.get("image") or "")
+        m_ = re.match(r"^data:(image/(?:png|jpeg|webp));base64,(.+)$", img, re.S)
+        if not m_:
+            raise ApiError(400, "Send a PNG or JPEG image.")
+        raw_bytes = base64.b64decode(m_.group(2))
+        if len(raw_bytes) > 25 * 1024 * 1024:
+            raise ApiError(413, "That image is too large (25 MB max).")
+        digest = hashlib.sha256(raw_bytes).hexdigest()
+        dest = self.app.blob_path(digest)
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(raw_bytes)
+        model = ai_model(cfg)
+        hint = str(body.get("hint") or "").strip()[:500]
+        t0 = time.time()
+        out = ai_request(cfg, "/chat/completions", {
+            "model": model, "temperature": 0, "max_tokens": 4096,
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": img}},
+                {"type": "text", "text": SCHEDULE_PROMPT + (f"\nExtra note from the estimator: {hint}" if hint else "")}]}],
+        })
+        ms = int((time.time() - t0) * 1000)
+        text = ((out.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        if isinstance(text, list):   # some servers return content parts
+            text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
+        walls = extract_json_array(text)
+        cur = c.execute("INSERT INTO ai_log (kind, user_id, image_hash, model, raw, result, ms, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                        ("schedule", me["id"], digest, model, text, json.dumps(walls) if walls is not None else None, ms, time.time()))
+        if walls is None:   # still logged: bad answers are training data too
+            return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": [], "raw": text[:2000],
+                                        "error": "The AI answered, but not with a list of wall types. Try a tighter crop of just the schedule."})
+        return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": walls})
 
     def create_reset(self, c, user_id: int, cfg: dict) -> str:
         token = secrets.token_urlsafe(24)

@@ -10,6 +10,7 @@ takeoff.py — set up, brand, build and host Vanguard Takeoff.
     python3 takeoff.py service          # run in the background and start on boot (as root)
     python3 takeoff.py domain takeoff.vanguarddrywall.ca   # HTTPS via the DrywallApp's Caddy
     python3 takeoff.py email            # copy the DrywallApp's mailbox settings for emailed invites/resets
+    python3 takeoff.py ai-export        # AI answers + corrections as a training set
     python3 takeoff.py backup           # back up all projects and accounts
     python3 takeoff.py docker           # write Dockerfile.vanguard + nginx config
 
@@ -523,6 +524,38 @@ def cmd_email(args) -> None:
     log("Open Team → Email in Takeoff and click 'Send test email' to check it.")
 
 
+def cmd_ai_export(args) -> None:
+    """Export AI answers + estimator corrections as a training set (images + JSONL)."""
+    import json as _json
+    import sqlite3
+    db = HERE / "data" / "takeoff.db"
+    if not db.exists():
+        sys.exit("No data yet.")
+    out = Path(args.to).resolve() if args.to else HERE / "ai-training" / time.strftime("%Y%m%d-%H%M%S")
+    (out / "images").mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(db)
+    con.row_factory = sqlite3.Row
+    rows = con.execute("SELECT * FROM ai_log WHERE image_hash IS NOT NULL ORDER BY id").fetchall()
+    n = reviewed = 0
+    with open(out / "dataset.jsonl", "w") as f:
+        for r in rows:
+            src = HERE / "data" / "blobs" / r["image_hash"][:2] / r["image_hash"]
+            if not src.exists():
+                continue
+            img = out / "images" / f"{r['image_hash']}.png"
+            if not img.exists():
+                shutil.copyfile(src, img)
+            final = _json.loads(r["final"]) if r["final"] else None
+            reviewed += final is not None
+            f.write(_json.dumps({"id": r["id"], "kind": r["kind"], "image": f"images/{img.name}", "model": r["model"],
+                                 "ai_answer": _json.loads(r["result"]) if r["result"] else None,
+                                 "corrected": final, "raw": r["raw"]}) + "\n")
+            n += 1
+    con.close()
+    log(f"Exported {n} examples ({reviewed} reviewed by an estimator) to {out}")
+    log("Train on rows where 'corrected' is set: the image is the input, 'corrected' is the right answer.")
+
+
 def cmd_backup(args) -> None:
     """Copy the database (safely, even while running) and plan files to one archive."""
     import sqlite3
@@ -602,7 +635,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn in [("setup", cmd_setup), ("brand", cmd_brand), ("build", cmd_build),
-                     ("serve", cmd_serve), ("service", cmd_service), ("domain", cmd_domain), ("email", cmd_email), ("backup", cmd_backup), ("docker", cmd_docker),
+                     ("serve", cmd_serve), ("service", cmd_service), ("domain", cmd_domain), ("email", cmd_email), ("ai-export", cmd_ai_export), ("backup", cmd_backup), ("docker", cmd_docker),
                      ("init-config", cmd_init_config), ("all", cmd_all)]:
         sp = sub.add_parser(name)
         sp.set_defaults(func=fn)
@@ -613,8 +646,8 @@ def main() -> None:
         if name == "email":
             sp.add_argument("--drywallapp", default="", help="DrywallApp folder (default: ~/DrywallApp)")
             sp.add_argument("--url", default="https://takeoff.vanguarddrywall.ca", help="address used in emailed links")
-        if name == "backup":
-            sp.add_argument("--to", default="", help="folder for the backup archive (default: ./backups)")
+        if name in ("backup", "ai-export"):
+            sp.add_argument("--to", default="", help="output folder")
         if name in {"serve", "all", "service"}:
             sp.add_argument("--host", default="0.0.0.0",
                             help="use 0.0.0.0 to reach it from other devices on your network")
