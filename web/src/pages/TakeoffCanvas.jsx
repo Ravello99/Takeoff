@@ -10677,10 +10677,11 @@ export default function TakeoffCanvas() {
                           // stays visible; only runs you dropped go dark grey
                           const col = off ? "#4a4a4a" : (wallFind.colors?.[wfKey(w)] || "#1f3fc7");
                           return <g key={"fw" + w.id}>{w.noteKey && !off && <line x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke="#ffd400" strokeOpacity={0.55} strokeWidth={Math.max(w.thickPx, 3 / tf.scale) + 10 / tf.scale} strokeLinecap="round" />}<line x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke={col}
-                            strokeOpacity={off ? 0.55 : !cid ? 0.5 : w.tagSource === "thickness" || !w.tag ? 0.7 : 0.9}
-                            strokeWidth={Math.max(w.thickPx, 3 / tf.scale)} strokeDasharray={off ? `${3 / tf.scale} ${5 / tf.scale}` : !cid ? `${8 / tf.scale} ${5 / tf.scale}` : (w.score != null && w.score < DOUBT_BELOW ? `${10 / tf.scale} ${3 / tf.scale}` : undefined)}>
+                            strokeOpacity={off ? 0.7 : !cid ? 0.28 : w.tagSource === "thickness" || !w.tag ? 0.7 : 0.9}
+                            strokeWidth={off ? 2 / tf.scale : Math.max(w.thickPx, 3 / tf.scale)}
+                            strokeDasharray={off ? `${2 / tf.scale} ${4 / tf.scale}` : undefined}>
                             <title>{`${w.noteKey ? `${wfLabel(w.noteKey, wallFind)} · ` : ""}${w.existing ? "existing (screened pen) · " : ""}${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${w.score != null ? ` · wall checker ${Math.round(w.score * 100)}%` : ""}${off ? (wallFind.auto?.has(w.id) && !wallFind.touched?.has(w.id) ? " · dropped by the checker (click to restore)" : " · dropped") : ""}`}</title>
-                          </line></g>;
+                          </line>{!off && cid && w.score != null && w.score < DOUBT_BELOW && <line x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke="#111" strokeOpacity={0.75} strokeWidth={1.2 / tf.scale} strokeDasharray={`${6 / tf.scale} ${4 / tf.scale}`} pointerEvents="none" />}</g>;
                         })}
                         {/* end handles: drag to stretch or trim a run (⇧ moves the end freely) */}
                         {tf.scale >= WF_HANDLE_SCALE && wallFind.walls.filter((w) => !wallFind.off.has(w.id) && wallFind.map[wfKey(w)]).flatMap((w) => ["a", "b"].map((end) => (
@@ -11221,7 +11222,7 @@ export default function TakeoffCanvas() {
           return (
             <div data-find-walls-panel style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 300, maxHeight: "60%", overflowY: "auto", padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5 }}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6 }}>Find walls — review</div>
-              <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag — each has its own colour on the plan (click a swatch to change it); skipped tags show dashed and lighter, runs you drop show dark grey dots. Click a run to drop or restore it. Zoom in and drag a run's white end dot to stretch or trim it (⇧ moves it freely). Paler runs were matched by thickness only — check them.</div>
+              <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag — each has its own colour on the plan (click a swatch to change it); skipped groups show as a pale band in their colour, runs you drop as a thin dotted line, and doubtful runs get a dashed black centre line. Click a run to drop or restore it. Zoom in and drag a run's white end dot to stretch or trim it (⇧ moves it freely). Paler runs were matched by thickness only — check them.</div>
               <div style={{ fontSize: 11.5, marginBottom: 8, padding: "6px 8px", background: "var(--paper)", border: "1px solid var(--ink-faint)" }}>
                 {wallFind.checker?.trained
                   ? <>Wall checker (learned from {wallFind.checker.n} reviews{wallFind.checker.offline ? ", offline copy" : ""}): dropped <b>{wallFind.checker.dropped}</b> likely non-walls (grey dashes — click to restore); <b>{wallFind.checker.doubtful}</b> doubtful runs are drawn dashed.</>
@@ -11260,7 +11261,7 @@ export default function TakeoffCanvas() {
               })()}
               {groups.map((g) => (
                 <div key={g.tag} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                  <label title={`${wallFind.map[g.tag] ? "Colour on the plan" : "Skipped — shown dashed in this colour"} · click to change`}
+                  <label title={`${wallFind.map[g.tag] ? "Colour on the plan" : "Skipped — shown as a pale band in this colour"} · click to change`}
                     style={{ position: "relative", width: 16, height: 16, flex: "0 0 16px", borderRadius: 3, cursor: "pointer", background: wallFind.map[g.tag] ? (wallFind.colors?.[g.tag] || "#1f3fc7") : `repeating-linear-gradient(45deg, ${wallFind.colors?.[g.tag] || "#8a8a8a"} 0 3px, transparent 3px 6px)`, border: `2px solid ${wallFind.colors?.[g.tag] || "#8a8a8a"}` }}>
                     <input type="color" aria-label={`Colour for ${wfLabel(g.tag, wallFind)}`} value={wallFind.colors?.[g.tag] || "#1f3fc7"}
                       onChange={(e) => {
