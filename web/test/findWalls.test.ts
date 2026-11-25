@@ -92,6 +92,22 @@ test("a double-bordered note box with text inside is not a wall", () => {
   assert.ok(r.walls[0].a[1] > 290);
 });
 
+test("a notes table's double border is not a wall; a crowded washroom wall still is", () => {
+  const segs: number[] = [], width: number[] = [];
+  const add = (x1: number, y1: number, x2: number, y2: number) => { segs.push(x1, y1, x2, y2); width.push(1.7); };
+  const T = 4.875 * PPI;
+  // notes column: a vertical double border at x=100, left-aligned note lines beside it
+  add(100, 100, 100, 700); add(100 + T, 100, 100 + T, 700);
+  const texts = [] as { str: string; x0: number; y0: number; x1: number; y1: number }[];
+  for (let i = 0; i < 40; i++) texts.push({ str: `${i + 1}. PROVIDE BLOCKING AS REQUIRED`, x0: 115, y0: 105 + i * 14, x1: 300, y1: 115 + i * 14 });
+  // a real wall elsewhere with scattered room labels around it
+  add(600, 100, 600, 400); add(600 + T, 100, 600 + T, 400);
+  for (const [x, y, s] of [[540, 150, "WC"], [640, 180, "STOR."], [560, 260, "JAN."], [650, 330, "112"], [540, 360, "MECH"]] as [number, number, string][]) texts.push({ str: s, x0: x, y0: y, x1: x + 30, y1: y + 10 });
+  const r = findWalls({ segs, width, texts, pxPerFt: PPF });
+  assert.equal(r.walls.length, 1);
+  assert.ok(r.walls[0].a[0] > 590);
+});
+
 test("empty and scaleless input are harmless", () => {
   assert.equal(findWalls({ segs: [], pxPerFt: 18 }).walls.length, 0);
   assert.ok(Array.isArray(findWalls({ segs: [0, 0, 10, 0], pxPerFt: 0 }).walls));

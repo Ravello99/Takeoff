@@ -71,6 +71,9 @@ export const MIN_WALL_FT = 1.0;        // a finished run shorter than this is a 
 export const ANGLE_TOL_DEG = 1.0;
 export const WELD_GAP_FT = 0.2;        // collinear pieces closer than this are one run (drafting breaks)
 export const RUN_GAP_FT = 5;           // a tag carries along its run across a gap up to a door opening
+export const TABLE_REACH_LINES = 6;   // text within this many text-heights alongside a run counts toward "table border"
+export const TABLE_MIN_TEXTS = 8;     // ...at least this many runs of text
+export const TABLE_COVER = 0.6;       // ...lying along this share of its length (a plan wall has a room name or a dimension, not a column of text)
 export const INLINE_MAX_FT = 4;       // a piece this short sitting in a tagged run's line takes its tag...
 export const INLINE_GAP_FT = 1;       // ...when it is this close to it
 export const NEAR_TAG_FT = 6;          // a leaderless tag claims a wall within this distance
@@ -465,6 +468,16 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
       const rm = (s.rlo + s.rhi) / 2;
       return { a: toXY(s.th, s.t0, rm), b: toXY(s.th, s.t1, rm), thick: s.rhi - s.rlo, th: s.th, g: s.g, rlo: s.rlo, rhi: s.rhi, t0: s.t0, t1: s.t1, main: !!s.main, pw: s.pw || 0, pl: s.pl || 0, hatch: hatched.count(s, 400) };
     });
+  // COLUMN text: a line that starts where 3+ others above/below it start, at a
+  // line pitch — notes, legends, schedules and title blocks are made of it;
+  // room names and tags on a plan are not. Measured in the sheet's own text height.
+  const all = (inp.texts || []).filter((sp) => (sp.str || "").trim());
+  const hMed = median(all.map((sp) => Math.max(1, Math.min(sp.x1 - sp.x0, sp.y1 - sp.y0)))) || ppf / 3;
+  const bins = new Map<number, TextSpan[]>();
+  for (const sp of all) { const k = Math.round(sp.x0 / (0.6 * hMed)); for (const kk of [k - 1, k, k + 1]) { let a = bins.get(kk); if (!a) bins.set(kk, (a = [])); a.push(sp); } }
+  const column = all.filter((sp) => (bins.get(Math.round(sp.x0 / (0.6 * hMed))) || []).filter((o) => o !== sp && Math.abs(o.x0 - sp.x0) <= 0.6 * hMed && Math.abs(o.y0 - sp.y0) <= 6 * hMed).length >= 3);
+  const columnSet = new Set(column);
+
   // a "wall" with words inside it is a note box, a keynote tag or a title strip
   // drawn with a double border — real walls don't carry text between their faces
   if (inp.texts && inp.texts.length) {
@@ -483,6 +496,30 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
       });
       if (boxed) raw.splice(k, 1);
     }
+    // a run with dense lines of text alongside it is a table border — the notes,
+    // a schedule, the legend, the title block — not a wall: plans put a room name
+    // or a tag near a wall, never a column of text
+    for (let k = raw.length - 1; k >= 0; k--) {
+      const w = raw[k];
+      const c = Math.cos(w.th), sn = Math.sin(w.th);
+      const reach = TABLE_REACH_LINES * hMed, rm = (w.rlo + w.rhi) / 2;
+      const iv: [number, number][] = [];
+      for (const sp of column) {
+        // the text line's extent along the wall, if it lies alongside it
+        const xs = [sp.x0, sp.x1, sp.x0, sp.x1], ys = [sp.y0, sp.y0, sp.y1, sp.y1];
+        const ts = xs.map((x, i) => x * c + ys[i] * sn), rs = xs.map((x, i) => -x * sn + ys[i] * c);
+        const r0 = Math.min(...rs), r1 = Math.max(...rs);
+        if (r1 < rm - reach || r0 > rm + reach) continue;
+        const t0 = Math.max(w.t0, Math.min(...ts)), t1 = Math.min(w.t1, Math.max(...ts));
+        if (t1 > t0) iv.push([t0, t1]);
+      }
+      if (iv.length < TABLE_MIN_TEXTS) continue;
+      iv.sort((p, q) => p[0] - q[0]);
+      let covered = 0, cs = iv[0][0], ce = iv[0][1];
+      for (const [p0, p1] of iv.slice(1)) { if (p0 > ce) { covered += ce - cs; cs = p0; ce = p1; } else ce = Math.max(ce, p1); }
+      covered += ce - cs;
+      if (covered / (w.t1 - w.t0) >= TABLE_COVER) raw.splice(k, 1);
+    }
   }
   extendEnds(raw);
 
@@ -491,7 +528,7 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
   const marks: { known: boolean; tag: string; x: number; y: number; h: number }[] = [];
   for (const sp of inp.texts || []) {
     const s = (sp.str || "").trim().toUpperCase();
-    if (!s) continue;
+    if (!s || columnSet.has(sp)) continue;     // a tag printed in a legend or schedule tags nothing
     const known = !!tagSet && tagSet.has(s);
     if (!known && !TAG_RE.test(s)) continue;
     marks.push({ known, tag: s, x: (sp.x0 + sp.x1) / 2, y: (sp.y0 + sp.y1) / 2, h: Math.max(2, Math.min(sp.x1 - sp.x0, sp.y1 - sp.y0)) });

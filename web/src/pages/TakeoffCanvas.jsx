@@ -230,6 +230,7 @@ import { legendSamples, matchWallStyles } from "../lib/legendStyles";
 // Find walls review groups: a scope note's walls, screened (existing) walls, or a plan tag
 const wfKey = (w) => w.noteKey || (w.existing && !w.inScope ? "§EX" : (w.tag || "?"));
 const wfLabel = (key, wf) => (key === "?" ? "Untagged" : key === "§EX" ? "Existing" : key.startsWith("§N") ? (wf?.noteLabels?.[key] || "Noted") : key);
+const WF_HANDLE_SCALE = 0.45;   // end dots show (and grab) only zoomed in this far — zoomed out they bury the plan
 const NOTE_INCLUDE = new Set(["fur_existing", "patch_repair", "new_board_on_existing", "include_existing", "new_work"]);
 const NOTE_EXCLUDE = new Set(["exclude", "demo"]);
 import { findScheduleOnPage } from "../lib/scheduleFinder";
@@ -5291,7 +5292,7 @@ export default function TakeoffCanvas() {
         if (d < gd) { gd = d; grab = { w, end }; }
       }
     }
-    if (grab && e) {
+    if (grab && e && tfRef.current.scale >= WF_HANDLE_SCALE) {
       const o = grab.end === "a" ? grab.w.b : grab.w.a, q = grab.w[grab.end];
       const L = Math.hypot(q[0] - o[0], q[1] - o[1]) || 1;
       wfDragRef.current = { id: grab.w.id, end: grab.end, other: o.slice(), dir: [(q[0] - o[0]) / L, (q[1] - o[1]) / L] };
@@ -10682,7 +10683,7 @@ export default function TakeoffCanvas() {
                           </line></g>;
                         })}
                         {/* end handles: drag to stretch or trim a run (⇧ moves the end freely) */}
-                        {wallFind.walls.filter((w) => !wallFind.off.has(w.id) && wallFind.map[wfKey(w)]).flatMap((w) => ["a", "b"].map((end) => (
+                        {tf.scale >= WF_HANDLE_SCALE && wallFind.walls.filter((w) => !wallFind.off.has(w.id) && wallFind.map[wfKey(w)]).flatMap((w) => ["a", "b"].map((end) => (
                           <circle key={`fwh${w.id}${end}`} cx={w[end][0]} cy={w[end][1]} r={3.6 / tf.scale}
                             fill="#fff" stroke={wallFind.colors?.[wfKey(w)] || "#1f3fc7"} strokeWidth={1.6 / tf.scale} style={{ cursor: "move" }} />
                         )))}
@@ -11220,7 +11221,7 @@ export default function TakeoffCanvas() {
           return (
             <div data-find-walls-panel style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 300, maxHeight: "60%", overflowY: "auto", padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5 }}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6 }}>Find walls — review</div>
-              <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag — each has its own colour on the plan (click a swatch to change it); skipped tags show dashed and lighter, runs you drop show dark grey dots. Click a run to drop or restore it. Drag a run's white end dot to stretch or trim it (⇧ moves it freely). Paler runs were matched by thickness only — check them.</div>
+              <div style={{ color: "var(--ink-muted)", fontSize: 11.5, marginBottom: 8 }}>Pick the assembly for each plan tag — each has its own colour on the plan (click a swatch to change it); skipped tags show dashed and lighter, runs you drop show dark grey dots. Click a run to drop or restore it. Zoom in and drag a run's white end dot to stretch or trim it (⇧ moves it freely). Paler runs were matched by thickness only — check them.</div>
               <div style={{ fontSize: 11.5, marginBottom: 8, padding: "6px 8px", background: "var(--paper)", border: "1px solid var(--ink-faint)" }}>
                 {wallFind.checker?.trained
                   ? <>Wall checker (learned from {wallFind.checker.n} reviews{wallFind.checker.offline ? ", offline copy" : ""}): dropped <b>{wallFind.checker.dropped}</b> likely non-walls (grey dashes — click to restore); <b>{wallFind.checker.doubtful}</b> doubtful runs are drawn dashed.</>
