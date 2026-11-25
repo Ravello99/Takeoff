@@ -50,6 +50,9 @@ export interface FoundWall {
   confidence: number;               // 0–1
   features: number[];               // FEATURE_NAMES order — the wall checker's input
   existing: boolean;                // drawn in a screened (lighter) wall pen: likely existing, outside scope unless a note says so
+  penWidth?: number;                // device px — the wall pen's stroke width (legend matching)
+  penLum?: number;                  // 0–255 — the wall pen's shade
+  hatchPerFt?: number;              // hatch strokes between the faces per foot
 }
 
 export interface FindWallsResult {
@@ -645,6 +648,7 @@ export function findWalls(inp: FindWallsInput): FindWallsResult {
     confidence: source[k] ? CONF[source[k] as TagSource] : 0.3,
     features: features[k],
     existing: existing[k],
+    penWidth: +w.pw.toFixed(3), penLum: w.pl, hatchPerFt: features[k][6],
   }));
 
   const tagAgg = new Map<string, { count: number; lengthFt: number; th: number[] }>();

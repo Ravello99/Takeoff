@@ -73,6 +73,11 @@ Answer ONLY with one JSON object, no prose, no markdown:
 {"existing_walls_in_scope": "yes" | "no" | "unclear",
  "reason": "one sentence quoting or paraphrasing the note that decides it",
  "existing_style": "how the legend says existing walls are drawn (e.g. 'screened/grey', 'hatched', 'dashed'), or \"\"",
+ "legend": [
+   {"label": "the legend entry's text exactly as written (e.g. 'EXISTING WALL TO REMAIN')",
+    "meaning": "new_wall" | "existing_wall" | "demo_wall" | "rated_wall" | "wall_tag" | "door_tag" | "keynote" | "room_tag" | "window_tag" | "other",
+    "rating": "fire rating for a rated wall style (e.g. '1 HR'), else \"\"",
+    "prefix": "for a tag symbol: the letters its marks start with (e.g. 'D' for door tags D1, D2), else \"\""}],
  "notes": [
    {"mark": "keynote number/letter exactly as shown, or \"\" for a general note",
     "text": "the note, shortened to one line",
@@ -80,6 +85,8 @@ Answer ONLY with one JSON object, no prose, no markdown:
     "applies_to": "what it applies to (e.g. 'existing exterior walls', 'columns')",
     "rooms": ["room names or numbers the note names, exactly as written"],
     "wall_type": "wall type tag the note calls for (e.g. 'F1', 'WP-2'), or \"\""}]}
+For "legend", list the symbol / wall legend entries: wall line styles (new, existing, demolished, rated) and
+tag symbols (wall type tags, door tags, keynotes, room tags), so the wall finder can tell them apart.
 List only notes that change what drywall work is done to WALLS: work on existing walls (furring, patching,
 new board, skim), existing walls excluded or by others, demolition, or new walls the plan doesn't tag.
 Skip notes about doors, MEP, flooring, millwork and general conditions. Do not invent notes."""
@@ -1036,6 +1043,8 @@ class Handler(BaseHTTPRequestHandler):
             "notes": [{"mark": str(n.get("mark") or "")[:8], "text": str(n.get("text") or "")[:300], "action": str(n.get("action") or "info"),
                        "applies_to": str(n.get("applies_to") or "")[:160], "rooms": [str(r)[:60] for r in (n.get("rooms") or []) if r][:12],
                        "wall_type": str(n.get("wall_type") or "")[:20]} for n in notes],
+            "legend": [{"label": str(e.get("label") or "")[:120], "meaning": str(e.get("meaning") or "other"), "rating": str(e.get("rating") or "")[:20],
+                        "prefix": str(e.get("prefix") or "")[:6]} for e in (result.get("legend") or []) if isinstance(e, dict) and e.get("label")][:40],
         }
         return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "result": clean})
 

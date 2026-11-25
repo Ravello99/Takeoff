@@ -311,12 +311,14 @@ class ServerTest(unittest.TestCase):
             self.assertIn("16mm GYPSUM WALL BOARD", sent)
             self.assertIn("from A002 p3", sent)
             # scope notes → JSON object (fenced, with chatter) normalised
-            seen["reply"] = 'Here you go:\n```json\n{"existing_walls_in_scope": "no", "reason": "Existing walls to remain, no work.", "notes": [{"mark": "4", "text": "Fur out existing wall", "action": "fur_existing", "rooms": ["EXAM 7"], "wall_type": "F1"}]}\n```'
+            seen["reply"] = 'Here you go:\n```json\n{"existing_walls_in_scope": "no", "reason": "Existing walls to remain, no work.", "notes": [{"mark": "4", "text": "Fur out existing wall", "action": "fur_existing", "rooms": ["EXAM 7"], "wall_type": "F1"}], "legend": [{"label": "EXISTING WALL TO REMAIN", "meaning": "existing_wall"}, {"label": "DOOR TAG", "meaning": "door_tag", "prefix": "D"}]}\n```'
             s, out, _ = admin.req("POST", "/api/ai/read-notes", {"text": "KEYNOTES\n4. FUR OUT EXISTING WALL W/ 1-5/8\" STUDS", "source": "A101"})
             self.assertEqual(s, 200)
             self.assertEqual(out["result"]["existing_walls_in_scope"], "no")
             self.assertEqual(out["result"]["notes"][0]["mark"], "4")
             self.assertEqual(out["result"]["notes"][0]["rooms"], ["EXAM 7"])
+            self.assertEqual([e["meaning"] for e in out["result"]["legend"]], ["existing_wall", "door_tag"])
+            self.assertEqual(out["result"]["legend"][1]["prefix"], "D")
             self.assertEqual(admin.req("POST", "/api/ai/read-notes", {"text": "x"})[0], 400)
             # wrong image type refused
             self.assertEqual(admin.req("POST", "/api/ai/read-schedule", {"image": "data:text/plain;base64,aGk="})[0], 400)

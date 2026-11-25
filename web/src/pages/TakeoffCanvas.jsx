@@ -225,6 +225,7 @@ import * as panelGeom from "../lib/panelGeometry.js";
 import { findWalls, FEATURE_NAMES, FEATURE_VERSION } from "../lib/findWalls";
 import { scoreRun, isWallModel, featureIndexMap, DROP_BELOW, DOUBT_BELOW } from "../lib/wallModel";
 import { notesText, notesScore, locateNotes } from "../lib/notesFinder";
+import { legendSamples, matchWallStyles } from "../lib/legendStyles";
 
 // Find walls review groups: a scope note's walls, screened (existing) walls, or a plan tag
 const wfKey = (w) => w.noteKey || (w.existing && !w.inScope ? "§EX" : (w.tag || "?"));
@@ -5220,9 +5221,28 @@ export default function TakeoffCanvas() {
       const res = r.result;
       const located = locateNotes({ segs: vectorSegsRef.current.get(wf.key) || [], meta: segMetaRef.current.get(wf.key), texts: spans, pxPerFt: upp ? 1 / upp : 18 }, wf.walls, res.notes);
       const byTag = new Map(conditions.filter((c) => c.finish_tag).map((c) => [c.finish_tag.trim().toUpperCase(), c.id]));
+      // the legend: each wall style's sample graphic, measured on this sheet
+      const samples = legendSamples({ segs: vectorSegsRef.current.get(wf.key) || [], width: segWidthRef.current.get(wf.key), lum: segLumRef.current.get(wf.key), meta: segMetaRef.current.get(wf.key), texts: spans }, res.legend || []);
+      // tag symbols the legend says are NOT wall types (door, window, room tags)
+      const notWallPrefixes = (res.legend || []).filter((e) => ["door_tag", "window_tag", "room_tag"].includes(e.meaning) && e.prefix).map((e) => e.prefix.toUpperCase());
       setWallFind((cur) => {
         if (!cur) return cur;
         const walls = cur.walls.map((w) => ({ ...w }));
+        // 1. wall styles from the legend: existing / demolished / new / rated
+        const styleOf = matchWallStyles(walls, samples);
+        const styleCount = new Map();
+        walls.forEach((w, i) => {
+          const st = styleOf[i];
+          if (!st) return;
+          w.style = st.meaning; w.styleLabel = st.label;
+          if (st.meaning === "existing_wall" || st.meaning === "demo_wall") w.existing = true;
+          else w.existing = false;
+          styleCount.set(st.label, (styleCount.get(st.label) || 0) + 1);
+        });
+        // 2. marks that are door / window / room tags are not wall types
+        let untagged = 0;
+        const isNotWallTag = (t) => !!t && notWallPrefixes.some((pre) => new RegExp(`^${pre.replace(/[^A-Z0-9]/g, "")}-?\\d`).test(t));
+        for (const w of walls) if (isNotWallTag(w.tag)) { w.tag = null; w.tagSource = null; untagged++; }
         const byId = new Map(walls.map((w) => [w.id, w]));
         const map = { ...cur.map }, colors = { ...cur.colors }, noteLabels = { ...(cur.noteLabels || {}) };
         const off = new Set(cur.off), auto = new Set(cur.auto || []);
@@ -5242,8 +5262,14 @@ export default function TakeoffCanvas() {
           }
           return { ...n, walls: ids.length, marks: located[i]?.marks || 0 };
         });
-        if (!colors["§EX"]) colors["§EX"] = WALL_REVIEW_COLORS[ci++ % WALL_REVIEW_COLORS.length];
-        return { ...cur, walls, map, colors, noteLabels, off, auto, scope: { status: "done", ...res, found } };
+        // every group that now exists has a colour and a mapping (new groups start skipped)
+        for (const w of walls) {
+          const k = wfKey(w);
+          if (!colors[k]) colors[k] = WALL_REVIEW_COLORS[ci++ % WALL_REVIEW_COLORS.length];
+          if (!(k in map)) map[k] = k === "?" || k === "§EX" ? "" : (byTag.get(k) || "");
+        }
+        const legendFound = samples.map((sm) => ({ label: sm.label, meaning: sm.meaning, runs: styleCount.get(sm.label) || 0 }));
+        return { ...cur, walls, map, colors, noteLabels, off, auto, scope: { status: "done", ...res, found, legendFound, untagged, notWallPrefixes } };
       });
     } catch (e) {
       setWallFind((cur) => cur && { ...cur, scope: { status: "error", error: String(e?.message || e) } });
@@ -11206,13 +11232,20 @@ export default function TakeoffCanvas() {
                 return (
                   <div style={{ fontSize: 11.5, marginBottom: 8, padding: "6px 8px", border: "1px solid var(--ink-faint)", background: "#fffbe6" }}>
                     {nEx > 0 && <div style={{ marginBottom: 4 }}><b>{nEx}</b> runs are drawn in a lighter (screened) pen — likely <b>existing</b>, grouped as “Existing” and skipped unless you pick an assembly.</div>}
-                    {!sc && <button type="button" onClick={checkScopeNotes} style={{ padding: "4px 8px", border: "1px solid var(--ink-faint)", background: "#fff", cursor: "pointer", fontWeight: 600 }}>✨ Check the notes for scope</button>}
-                    {!sc && <span style={{ color: "var(--ink-muted)" }}> — the AI reads the notes, legend and keynotes for existing walls you do work on (fur out, patch, new board) and highlights them.</span>}
+                    {!sc && <button type="button" onClick={checkScopeNotes} style={{ padding: "4px 8px", border: "1px solid var(--ink-faint)", background: "#fff", cursor: "pointer", fontWeight: 600 }}>✨ Read the legend &amp; notes</button>}
+                    {!sc && <span style={{ color: "var(--ink-muted)" }}> — the AI reads the symbol/wall legend (which line style is new, existing or demolished; which marks are door tags) and the notes and keynotes for existing walls you do work on, then applies it to these runs.</span>}
                     {sc?.status === "reading" && <span>Reading the notes… <span style={{ color: "var(--ink-muted)" }}>{sc.progress}</span></span>}
                     {sc?.status === "error" && <span style={{ color: "var(--c-danger)" }}>{sc.error} <button type="button" onClick={checkScopeNotes}>Try again</button></span>}
                     {sc?.status === "done" && sc.none && <span>No scope notes found in this set's text.</span>}
                     {sc?.status === "done" && !sc.none && (<>
                       <div><b>Existing walls in scope: {sc.existing_walls_in_scope === "yes" ? "yes" : sc.existing_walls_in_scope === "no" ? "no" : "unclear"}</b>{sc.reason ? ` — ${sc.reason}` : ""}</div>
+                      {(sc.legendFound || []).length > 0 && (
+                        <div style={{ marginTop: 4 }}><b>Legend:</b>{" "}{sc.legendFound.map((l, i) => <span key={i}>{i ? " · " : ""}{l.label} <span style={{ color: l.runs ? "var(--c-positive)" : "var(--ink-muted)" }}>({l.runs} run{l.runs === 1 ? "" : "s"})</span></span>)}</div>
+                      )}
+                      {(sc.legend || []).some((e) => ["new_wall", "existing_wall", "demo_wall", "rated_wall"].includes(e.meaning)) && !(sc.legendFound || []).length && (
+                        <div style={{ marginTop: 4, color: "var(--ink-muted)" }}>The legend names wall styles, but their sample lines weren't found beside the labels on this sheet — existing walls are still judged by pen shade.</div>
+                      )}
+                      {sc.untagged > 0 && <div style={{ marginTop: 4 }}>{sc.untagged} run{sc.untagged === 1 ? " was" : "s were"} tagged with {sc.notWallPrefixes.join("/")}-marks, which the legend says are not wall types — moved to Untagged.</div>}
                       {(sc.found || []).filter((n) => n.action !== "info").map((n, i) => (
                         <div key={i} style={{ marginTop: 3 }}>
                           <span style={{ fontWeight: 600 }}>{n.mark ? `Note ${n.mark}` : "Note"}</span>: {n.text}
