@@ -278,10 +278,22 @@ def normalize_ai_url(url: str) -> str:
     return u
 
 
+def is_serverless(cfg: dict) -> bool:
+    """RunPod Serverless: workers start on demand, so a request may wait out a cold
+    start (minutes on a new endpoint, while it downloads the model)."""
+    return "api.runpod.ai/v2/" in (cfg.get("ai_base_url") or "")
+
+
+AI_TIMEOUT_SERVERLESS = 900   # a brand-new endpoint downloads ~17 GB before its first answer
+
+
 def ai_request(cfg: dict, path: str, body: dict | None = None, timeout: int = AI_TIMEOUT) -> dict:
     """GET/POST JSON to the configured endpoint, e.g. https://<pod>-8000.proxy.runpod.net/v1"""
     import urllib.request
     import urllib.error
+    serverless = is_serverless(cfg)
+    if serverless:
+        timeout = max(timeout, AI_TIMEOUT_SERVERLESS if body is not None or path != "/models" else 120)
     url = normalize_ai_url(cfg["ai_base_url"]) + path
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET",
@@ -303,7 +315,11 @@ def ai_request(cfg: dict, path: str, body: dict | None = None, timeout: int = AI
             raise ApiError(502, f"The AI server has nothing at {url}. Check the address ends in /v1 and that vLLM is running on port 8000.")
         raise ApiError(502, f"The AI server answered {e.code}: {detail or e.reason}")
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise ApiError(502, f"Couldn't reach the AI server ({getattr(e, 'reason', e)}). Is the Pod running?")
+        reason = getattr(e, "reason", e)
+        if serverless and "timed out" in str(reason).lower():
+            raise ApiError(504, "The AI is still starting up — a new or long-idle RunPod Serverless endpoint loads the model first "
+                                "(the very first start downloads it, up to ~10 minutes). Watch the endpoint's logs and try again once it's ready.")
+        raise ApiError(502, f"Couldn't reach the AI server ({reason}). " + ("Check the endpoint ID and your RunPod API key." if serverless else "Is the Pod running?"))
 
 
 def ai_model(cfg: dict) -> str:
@@ -317,7 +333,10 @@ def ai_model(cfg: dict) -> str:
 
 def ai_context_len(cfg: dict, model: str) -> int | None:
     """The served model's context window (vLLM lists max_model_len on /models);
-    None when the server doesn't say."""
+    None when the server doesn't say. Serverless: not asked — /models would wait
+    out a cold start just to report a number (set Max Model Length 16384)."""
+    if is_serverless(cfg):
+        return None
     try:
         for m_ in ai_request(cfg, "/models", timeout=30).get("data") or []:
             if m_.get("id") == model and m_.get("max_model_len"):

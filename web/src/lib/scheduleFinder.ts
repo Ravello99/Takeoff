@@ -90,6 +90,34 @@ export function buildBlocks(tokens: Tok[]): ScheduleBlock[] {
   });
 }
 
+/** Schedules that put the mark BESIDE its description (a WP-1 hexagon on the
+ *  left, the layers to its right) come out as a bare-mark block and a
+ *  description block. Join each bare mark to the description it sits beside. */
+export function pairSideTags(blocks: ScheduleBlock[]): ScheduleBlock[] {
+  const bare = blocks.filter((b) => b.tags > 0 && b.words < 2 && b.lines.length <= 2);
+  const used = new Set<ScheduleBlock>();
+  const out: ScheduleBlock[] = [];
+  for (const t of bare) {
+    const h = Math.max(1, (t.y1 - t.y0) / Math.max(1, t.lines.length));
+    let best: ScheduleBlock | null = null, gap = 25 * h;
+    for (const d of blocks) {
+      if (d === t || used.has(d) || d.words < 2) continue;
+      const dx = d.x0 - t.x1;
+      if (dx < -h || dx > gap) continue;
+      // beside it: the description's top is near the mark (it may run down below it)
+      const overlap = Math.min(t.y1, d.y1) - Math.max(t.y0, d.y0);
+      if (overlap < -2 * h || d.y0 > t.y1 + 2 * h || d.y1 < t.y0 - 2 * h) continue;
+      gap = dx; best = d;
+    }
+    if (!best) continue;
+    used.add(best); used.add(t);
+    out.push({ x0: Math.min(t.x0, best.x0), y0: Math.min(t.y0, best.y0), x1: Math.max(t.x1, best.x1), y1: Math.max(t.y1, best.y1),
+      // scored as a type block (a description alone was scored down as stray notes)
+      lines: [...t.lines, ...best.lines], score: best.words + 3 * (t.tags + best.tags), tags: t.tags + best.tags, words: best.words });
+  }
+  return [...blocks.filter((b) => !used.has(b)), ...out];
+}
+
 /** Best schedule on one page (score 0 when nothing schedule-like is there).
  *  A schedule is laid out in columns of type blocks (mark + description), so
  *  blocks are grouped into columns and whole columns are kept: the strongest
@@ -99,7 +127,7 @@ export function findScheduleOnPage(tokens: Tok[]): ScheduleFind {
   const none: ScheduleFind = { score: 0, text: "", blocks: [], rect: null, heading: null };
   // a type block is a mark WITH a description in wall vocabulary — a bare mark in
   // a door or finish schedule's table column is not
-  const blocks = buildBlocks(tokens).filter((b) => (b.tags > 0 && b.words >= 2) || HEADING_RE.test(b.lines[0] || ""));
+  const blocks = pairSideTags(buildBlocks(tokens)).filter((b) => (b.tags > 0 && b.words >= 2) || HEADING_RE.test(b.lines[0] || ""));
   if (!blocks.length) return none;
   const xs = blocks.flatMap((b) => [b.x0, b.x1]);
   const W = Math.max(...xs) - Math.min(...xs) || 1;

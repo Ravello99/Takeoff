@@ -47,3 +47,18 @@ test("door tables and general notes are not schedules", () => {
   assert.ok(findScheduleOnPage(notesSheet()).score < sched / 2);
   assert.equal(findScheduleOnPage([]).score, 0);
 });
+
+test("a schedule with each mark beside its description (hexagon left, layers right) is found", () => {
+  const t: Tok[] = [...block(400, 40, ["WALL SCHEDULE"])];
+  const rows: [string, string[]][] = [
+    ["WP-1", ["5/8\" TYPE X GYPSUM BOARD EACH SIDE", "3-5/8\" 20 GA METAL STUDS @ 16\" O.C.", "SOUND BATT INSULATION"]],
+    ["WP-2", ["5/8\" GYPSUM BOARD ONE SIDE", "3-5/8\" METAL STUDS @ 16\" O.C."]],
+    ["WP-3", ["2 LAYERS 5/8\" TYPE X GYPSUM BOARD", "6\" METAL STUDS @ 16\" O.C.", "1 HR RATED, UL U419"]],
+  ];
+  let y = 90;
+  for (const [mark, desc] of rows) { t.push(...block(400, y + 10, [mark]), ...block(520, y, desc)); y += desc.length * H * 1.3 + 40; }
+  const r = findScheduleOnPage(t);
+  assert.ok(r.score > 30, `score ${r.score}`);
+  for (const m of ["WP-1", "WP-2", "WP-3"]) assert.match(r.text, new RegExp(`^${m}$`, "m"));
+  assert.match(r.text, /UL U419/);
+});
