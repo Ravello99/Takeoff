@@ -73,6 +73,16 @@ Answer ONLY with one JSON object, no prose, no markdown:
 {"existing_walls_in_scope": "yes" | "no" | "unclear",
  "reason": "one sentence quoting or paraphrasing the note that decides it",
  "existing_style": "how the legend says existing walls are drawn (e.g. 'screened/grey', 'hatched', 'dashed'), or \"\"",
+ "wall_types": [
+   {"tag": "the wall type mark exactly as shown (e.g. 'WP-1')",
+    "typical": true if the schedule or notes make it the default/typical wall ("TYPICAL PARTITION", "UNLESS OTHERWISE NOTED", "ALL PARTITIONS TO BE…"), else false,
+    "condition": "none" | "pocket_door" | "plumbing" | "corridor" | "rated" | "exterior" | "furring" | "shaft" | "demising" | "other",
+    "condition_text": "where it applies, as written (e.g. 'AT POCKET DOOR LOCATIONS'), or \"\"",
+    "stud_in": stud depth in inches as a number (3-5/8" -> 3.625, 92mm -> 3.625, 6" -> 6), or null,
+    "board_in": board thickness in inches (1/2" -> 0.5, 5/8" -> 0.625, 16mm -> 0.625), or null,
+    "layers_per_side": number of board layers on each finished side, or null,
+    "sides": 2 for both sides boarded, 1 for one side (furring/liner), or null,
+    "overall_in": the total wall thickness in inches if the schedule states it, else null}],
  "legend": [
    {"label": "the legend entry's text exactly as written (e.g. 'EXISTING WALL TO REMAIN')",
     "meaning": "new_wall" | "existing_wall" | "demo_wall" | "rated_wall" | "wall_tag" | "door_tag" | "keynote" | "room_tag" | "window_tag" | "other",
@@ -85,6 +95,8 @@ Answer ONLY with one JSON object, no prose, no markdown:
     "applies_to": "what it applies to (e.g. 'existing exterior walls', 'columns')",
     "rooms": ["room names or numbers the note names, exactly as written"],
     "wall_type": "wall type tag the note calls for (e.g. 'F1', 'WP-2'), or \"\""}]}
+For "wall_types", list every wall/partition type in the schedule or wall legend with its build-up; mark the one
+the drawings treat as typical / default (used where a wall is not tagged).
 For "legend", list the symbol / wall legend entries: wall line styles (new, existing, demolished, rated) and
 tag symbols (wall type tags, door tags, keynotes, room tags), so the wall finder can tell them apart.
 List only notes that change what drywall work is done to WALLS: work on existing walls (furring, patching,
@@ -441,6 +453,23 @@ def extract_json_array(text: str):
     except json.JSONDecodeError:
         return None
     return v if isinstance(v, list) else None
+
+
+def clean_wall_type(t: dict) -> dict:
+    def num(v):
+        try:
+            f = float(v)
+            return f if 0 < f < 40 else None
+        except (TypeError, ValueError):
+            return None
+    stud, board, layers, sides, overall = num(t.get("stud_in")), num(t.get("board_in")), num(t.get("layers_per_side")), num(t.get("sides")), num(t.get("overall_in"))
+    if overall is None and stud:
+        # the finished thickness from the build-up: studs plus every layer of board
+        overall = stud + (board or 0.625) * (layers or 1) * (sides or 2)
+    return {"tag": str(t.get("tag") or "")[:20].strip().upper(), "typical": t.get("typical") is True,
+            "condition": str(t.get("condition") or "none")[:20], "condition_text": str(t.get("condition_text") or "")[:160],
+            "stud_in": stud, "board_in": board, "layers_per_side": layers, "sides": sides,
+            "overall_in": round(overall, 3) if overall else None}
 
 
 def extract_json_object(text: str):
@@ -1248,6 +1277,7 @@ class Handler(BaseHTTPRequestHandler):
             "notes": [{"mark": str(n.get("mark") or "")[:8], "text": str(n.get("text") or "")[:300], "action": str(n.get("action") or "info"),
                        "applies_to": str(n.get("applies_to") or "")[:160], "rooms": [str(r)[:60] for r in (n.get("rooms") or []) if r][:12],
                        "wall_type": str(n.get("wall_type") or "")[:20]} for n in notes],
+            "wall_types": [clean_wall_type(t) for t in (result.get("wall_types") or []) if isinstance(t, dict) and t.get("tag")][:30],
             "legend": [{"label": str(e.get("label") or "")[:120], "meaning": str(e.get("meaning") or "other"), "rating": str(e.get("rating") or "")[:20],
                         "prefix": str(e.get("prefix") or "")[:6]} for e in (result.get("legend") or []) if isinstance(e, dict) and e.get("label")][:40],
         }

@@ -226,6 +226,7 @@ import { findWalls, FEATURE_NAMES, FEATURE_VERSION } from "../lib/findWalls";
 import { scoreRun, isWallModel, featureIndexMap, DROP_BELOW, DOUBT_BELOW } from "../lib/wallModel";
 import { notesText, notesScore, locateNotes } from "../lib/notesFinder";
 import { legendSamples, matchWallStyles } from "../lib/legendStyles";
+import { typeUntaggedWalls, typeThickness } from "../lib/wallTypes";
 
 // Find walls review groups: a scope note's walls, screened (existing) walls, or a plan tag
 const wfKey = (w) => w.groupOverride || w.noteKey || (w.existing && !w.inScope ? "§EX" : (w.tag || "?"));
@@ -5417,6 +5418,11 @@ export default function TakeoffCanvas() {
       const parts = [];
       const own = notesText(toToks(spans), 6000);
       if (own) parts.push(`[THIS SHEET — ${currentSheetLabel()}]\n${own}`);
+      // the wall schedule (this sheet's, else the set's best) — its types' build-ups
+      // and which one is "typical" let untagged walls be typed by thickness
+      const schedHere = findScheduleOnPage(toToks(spans));
+      const schedText = schedHere.score > 0 ? schedHere.text : ([...schedCacheRef.current.values()].filter((h) => h.score > 0).sort((a, b) => b.score - a.score)[0]?.text || "");
+      if (schedText && !(own || "").includes(schedText.slice(0, 120))) parts.push(`[WALL SCHEDULE]\n${schedText.slice(0, 6000)}`);
       // the set's general-notes sheets (cached per session)
       const cands = [];
       for (const sh of sheets) {
@@ -5492,6 +5498,15 @@ export default function TakeoffCanvas() {
           }
           return { ...n, walls: ids.length, marks: located[i]?.marks || 0 };
         });
+        // 3. typical walls by geometry: untagged runs take the schedule type whose
+        //    finished thickness they measure, else the typical type
+        const typed = typeUntaggedWalls(walls, res.wall_types || []);
+        const typedCount = { schedule_thickness: 0, typical: 0 };
+        for (const w of walls) {
+          const t = typed.get(w.id);
+          if (!t) continue;
+          w.tag = t.tag; w.tagSource = t.via; typedCount[t.via]++;
+        }
         // every group that now exists has a colour and a mapping (new groups start skipped)
         for (const w of walls) {
           const k = wfKey(w);
@@ -5499,7 +5514,7 @@ export default function TakeoffCanvas() {
           if (!(k in map)) map[k] = k === "?" || k === "§EX" ? "" : (byTag.get(k) || "");
         }
         const legendFound = samples.map((sm) => ({ label: sm.label, meaning: sm.meaning, runs: styleCount.get(sm.label) || 0 }));
-        return wfConsolidate({ ...cur, walls, map, colors, noteLabels, off, auto, scope: { status: "done", ...res, found, legendFound, untagged, notWallPrefixes } });
+        return wfConsolidate({ ...cur, walls, map, colors, noteLabels, off, auto, scope: { status: "done", ...res, found, legendFound, untagged, notWallPrefixes, typedCount } });
       });
     } catch (e) {
       setWallFind((cur) => cur && { ...cur, scope: { status: "error", error: String(e?.message || e) } });
@@ -10984,7 +10999,7 @@ export default function TakeoffCanvas() {
                             strokeOpacity={off ? 0.7 : !cid ? 0.28 : w.tagSource === "thickness" || !w.tag ? 0.7 : 0.9}
                             strokeWidth={off ? 2 / tf.scale : Math.max(w.thickPx, 3 / tf.scale)}
                             strokeDasharray={off ? `${2 / tf.scale} ${4 / tf.scale}` : undefined}>
-                            <title>{`${w.noteKey ? `${wfLabel(w.noteKey, wallFind)} · ` : ""}${w.existing ? "existing (screened pen) · " : ""}${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + w.tagSource : ""}${w.score != null ? ` · wall checker ${Math.round(w.score * 100)}%` : ""}${w.ai ? ` · AI: ${w.ai.wall ? `wall, ${w.ai.status}` : "not a wall"}${w.ai.why ? ` (${w.ai.why})` : ""}` : ""}${off ? (wallFind.auto?.has(w.id) && !wallFind.touched?.has(w.id) ? " · dropped by the checker (click to restore)" : " · dropped") : ""}`}</title>
+                            <title>{`${w.noteKey ? `${wfLabel(w.noteKey, wallFind)} · ` : ""}${w.existing ? "existing (screened pen) · " : ""}${w.tag || "untagged"} · ${w.thickIn}" thick · ${w.lengthFt} ft${w.tagSource ? " · tag by " + (w.tagSource === "schedule_thickness" ? "thickness vs the schedule" : w.tagSource === "typical" ? "typical wall (untagged)" : w.tagSource) : ""}${w.score != null ? ` · wall checker ${Math.round(w.score * 100)}%` : ""}${w.ai ? ` · AI: ${w.ai.wall ? `wall, ${w.ai.status}` : "not a wall"}${w.ai.why ? ` (${w.ai.why})` : ""}` : ""}${off ? (wallFind.auto?.has(w.id) && !wallFind.touched?.has(w.id) ? " · dropped by the checker (click to restore)" : " · dropped") : ""}`}</title>
                           </line>{!off && cid && w.score != null && w.score < DOUBT_BELOW && <line x1={w.a[0]} y1={w.a[1]} x2={w.b[0]} y2={w.b[1]} stroke="#111" strokeOpacity={0.75} strokeWidth={1.2 / tf.scale} strokeDasharray={`${6 / tf.scale} ${4 / tf.scale}`} pointerEvents="none" />}</g>;
                         })}
                         {wfSel.size > 0 && wallFind.walls.filter((w) => wfSel.has(w.id)).map((w) => (
@@ -11636,6 +11651,18 @@ export default function TakeoffCanvas() {
                       )}
                       {(sc.legend || []).some((e) => ["new_wall", "existing_wall", "demo_wall", "rated_wall"].includes(e.meaning)) && !(sc.legendFound || []).length && (
                         <div style={{ marginTop: 4, color: "var(--ink-muted)" }}>The legend names wall styles, but their sample lines weren't found beside the labels on this sheet — existing walls are still judged by pen shade.</div>
+                      )}
+                      {(sc.wall_types || []).length > 0 && (
+                        <div style={{ marginTop: 4 }}>
+                          <b>Wall types:</b>{" "}
+                          {sc.wall_types.map((t, i) => {
+                            const th = typeThickness(t);
+                            return <span key={i}>{i ? " · " : ""}{t.tag}{t.typical ? " (typical)" : t.condition_text ? ` (${t.condition_text.toLowerCase()})` : ""}{th ? ` ${Math.round(th * 8) / 8}"` : ""}</span>;
+                          })}
+                          {(sc.typedCount?.schedule_thickness || sc.typedCount?.typical) ? (
+                            <div style={{ color: "var(--c-positive)" }}>Untagged runs typed: {sc.typedCount.schedule_thickness} by matching a type's thickness, {sc.typedCount.typical} as the typical wall.</div>
+                          ) : null}
+                        </div>
                       )}
                       {sc.untagged > 0 && <div style={{ marginTop: 4 }}>{sc.untagged} run{sc.untagged === 1 ? " was" : "s were"} tagged with {sc.notWallPrefixes.join("/")}-marks, which the legend says are not wall types — moved to Untagged.</div>}
                       {(sc.found || []).filter((n) => n.action !== "info").map((n, i) => (

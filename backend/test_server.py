@@ -355,7 +355,7 @@ class ServerTest(unittest.TestCase):
             self.assertIn("16mm GYPSUM WALL BOARD", sent)
             self.assertIn("from A002 p3", sent)
             # scope notes → JSON object (fenced, with chatter) normalised
-            seen["reply"] = 'Here you go:\n```json\n{"existing_walls_in_scope": "no", "reason": "Existing walls to remain, no work.", "notes": [{"mark": "4", "text": "Fur out existing wall", "action": "fur_existing", "rooms": ["EXAM 7"], "wall_type": "F1"}], "legend": [{"label": "EXISTING WALL TO REMAIN", "meaning": "existing_wall"}, {"label": "DOOR TAG", "meaning": "door_tag", "prefix": "D"}]}\n```'
+            seen["reply"] = 'Here you go:\n```json\n{"existing_walls_in_scope": "no", "reason": "Existing walls to remain, no work.", "notes": [{"mark": "4", "text": "Fur out existing wall", "action": "fur_existing", "rooms": ["EXAM 7"], "wall_type": "F1"}], "wall_types": [{"tag": "wp-1", "typical": true, "condition": "none", "stud_in": 3.625, "board_in": 0.5, "layers_per_side": 1, "sides": 2}, {"tag": "WP-2", "typical": false, "condition": "pocket_door", "condition_text": "AT POCKET DOOR LOCATIONS", "stud_in": 6, "board_in": 0.5}], "legend": [{"label": "EXISTING WALL TO REMAIN", "meaning": "existing_wall"}, {"label": "DOOR TAG", "meaning": "door_tag", "prefix": "D"}]}\n```'
             s, out, _ = admin.req("POST", "/api/ai/read-notes", {"text": "KEYNOTES\n4. FUR OUT EXISTING WALL W/ 1-5/8\" STUDS", "source": "A101"})
             self.assertEqual(s, 200)
             self.assertEqual(out["result"]["existing_walls_in_scope"], "no")
@@ -363,6 +363,8 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(out["result"]["notes"][0]["rooms"], ["EXAM 7"])
             self.assertEqual([e["meaning"] for e in out["result"]["legend"]], ["existing_wall", "door_tag"])
             self.assertEqual(out["result"]["legend"][1]["prefix"], "D")
+            wt = out["result"]["wall_types"]
+            self.assertEqual([(t["tag"], t["typical"], t["overall_in"]) for t in wt], [("WP-1", True, 4.625), ("WP-2", False, 7.0)])
             self.assertEqual(admin.req("POST", "/api/ai/read-notes", {"text": "x"})[0], 400)
             # plan tags → assemblies: unknown ids are refused
             seen["reply"] = '{"WP-2": "cnd_w2", "D2": null, "WP-9": "cnd_made_up"}'
