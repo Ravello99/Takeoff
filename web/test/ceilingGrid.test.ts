@@ -3,7 +3,7 @@
 // grid drawn on a reflected ceiling plan.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { layoutRoom, planJob, planTileCuts, planTeeCuts, planSticks, detectGrid, layoutPhase, fmtFtIn, roomAngle, tileSizeFromText, bestTurn, fromGrid, type Pt } from "../src/lib/ceilingGrid.ts";
+import { layoutRoom, planJob, planTileCuts, planTeeCuts, planSticks, detectGrid, layoutPhase, fmtFtIn, roomAngle, tileSizeFromText, bestTurn, fromGrid, detectGridRaster, classifyGridSegs, type Pt } from "../src/lib/ceilingGrid.ts";
 
 const rect = (w: number, h: number, x = 0, y = 0): Pt[] => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
 const G24 = { tileU: 4, tileV: 2, theta: 0 };
@@ -135,4 +135,49 @@ test("job cut list: border pieces grouped by size, offcuts traced back to their 
   assert.ok(reused > 0);
   assert.ok(job.tiles.bought < job.tiles.naiveBought);
   assert.ok(job.rooms[0].extent.u1 - job.rooms[0].extent.u0 === 14);
+});
+
+test("a bulkhead inside the room: no tiles under it, its edges get wall angle", () => {
+  const plain = layoutRoom(rect(16, 12), { tileU: 2, tileV: 2, theta: 0, mode: "wall" });
+  const holed = layoutRoom(rect(16, 12), { tileU: 2, tileV: 2, theta: 0, mode: "wall" }, 0, [rect(4, 4, 4, 4)]);
+  assert.equal(plain.fullTiles, 48);
+  assert.equal(holed.fullTiles, 44);                  // the 4'×4' bulkhead covers four whole tiles
+  assert.equal(holed.areaSf, 192 - 16);
+  assert.equal(holed.perimeterLf, plain.perimeterLf + 16);
+  const holed2 = layoutRoom(rect(16, 12), { tileU: 2, tileV: 2, theta: 0, mode: "wall" }, 0, [rect(3, 3, 5, 5)]);
+  assert.ok(holed2.cutPieces.length > 0);             // off-grid bulkhead → tiles cut around it
+  const mainsLf = (g: typeof plain) => g.mainRuns.reduce((a, b) => a + b, 0);
+  assert.ok(mainsLf(holed) < mainsLf(plain));
+});
+
+test("reading the grid from pixels (a pattern fill or a scan): 2×4 at 30°", () => {
+  const a = 30 * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  const toSheet = (u: number, v: number) => [u * c - v * s, u * s + v * c];
+  const poly = ([[0, 0], [20, 0], [20, 14], [0, 14]] as Pt[]).map(([u, v]) => toSheet(u, v) as Pt);
+  const px = 1 / 16, dark: number[] = [];
+  for (let u = 1; u < 20; u += 4) for (let v = 0.3; v < 13.7; v += px) dark.push(...toSheet(u, v));      // lines across u every 4'
+  for (let v = 1; v < 14; v += 2) for (let u = 0.3; u < 19.7; u += px) dark.push(...toSheet(u, v));      // lines across v every 2'
+  for (let i = 0; i < 400; i++) dark.push(...toSheet(3 + (i % 20) * 0.1, 6 + Math.floor(i / 20) * 0.1)); // a blob of text/symbol
+  const g = detectGridRaster(dark, poly, px);
+  assert.ok(g);
+  assert.equal(g!.tileU, 4); assert.equal(g!.tileV, 2);
+  assert.ok(Math.abs(((g!.theta - a) % Math.PI + Math.PI) % Math.PI) < 0.02);
+  const lay = layoutRoom(poly, { tileU: 4, tileV: 2, theta: g!.theta, mode: "designed", phaseU: g!.phaseU, phaseV: g!.phaseV });
+  assert.ok(lay.lines.u.every((x) => Math.abs(((x - 1) % 4 + 4) % 4) < 0.1 || Math.abs(((x - 1) % 4 + 4) % 4 - 4) < 0.1));
+});
+
+test("grid lines are told apart from walls (for finding the rooms)", () => {
+  const ppf = 10, segs: number[] = [];
+  const line = (x1: number, y1: number, x2: number, y2: number) => segs.push(x1 * ppf, y1 * ppf, x2 * ppf, y2 * ppf);
+  // a 20' × 12' room's walls (double lines 5" apart) …
+  line(0, 0, 20, 0); line(0, 0.4, 20, 0.4); line(0, 12, 20, 12); line(0, 11.6, 20, 11.6);
+  line(0, 0, 0, 12); line(0.4, 0, 0.4, 12); line(20, 0, 20, 12); line(19.6, 0, 19.6, 12);
+  const walls = segs.length >> 2;
+  // … and a 2×2 grid inside
+  for (let x = 2; x < 20; x += 2) line(x, 0.4, x, 11.6);
+  for (let y = 2; y < 12; y += 2) line(0.4, y, 19.6, y);
+  const f = classifyGridSegs(segs, ppf);
+  for (let i = 0; i < walls; i++) assert.equal(f[i], 0, `wall ${i}`);
+  let grid = 0; for (let i = walls; i < f.length; i++) grid += f[i];
+  assert.equal(grid, f.length - walls);
 });

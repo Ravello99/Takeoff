@@ -141,9 +141,17 @@ export function layoutPhase(lo: number, hi: number, T: number, mode: LayoutMode,
 }
 
 /** Lay out one room. */
-export function layoutRoom(polyFt: Pt[], spec: GridSpec, room = 0): RoomGrid {
+export function layoutRoom(polyFt: Pt[], spec: GridSpec, room = 0, holesFt: Pt[][] = []): RoomGrid {
   const c = Math.cos(spec.theta), s = Math.sin(spec.theta);
   const P = polyFt.map((p) => rot(p, c, s));
+  const H = holesFt.filter((h) => h.length >= 3).map((h) => h.map((p) => rot(p, c, s)));
+  // pieces of a line inside the room and outside every hole (bulkheads, soffits, cut-outs)
+  const ivs = (axis: 0 | 1, at: number): [number, number][] => {
+    let out = intervals(P, axis, at);
+    for (const h of H) for (const [a, b] of intervals(h, axis, at)) out = out.flatMap(([x, y]) => (b <= x || a >= y ? [[x, y] as [number, number]] : [[x, Math.min(y, a)], [Math.max(x, b), y]].filter(([p, q]) => q - p > 1e-6) as [number, number][]));
+    return out;
+  };
+  const chordsH = (axis: 0 | 1, at: number) => ivs(axis, at).map(([a, b]) => b - a);
   const T = spec.tileU, V = spec.tileV, M = spec.mainSpacing || 4;
   const mode = spec.mode || "balanced";
   const us = P.map((p) => p[0]), vs = P.map((p) => p[1]);
@@ -175,20 +183,22 @@ export function layoutRoom(polyFt: Pt[], spec: GridSpec, room = 0): RoomGrid {
   for (let i = 0; i + 1 < cellsU.length; i++) for (let j = 0; j + 1 < cellsV.length; j++) {
     const x0 = cellsU[i], x1 = cellsU[i + 1], y0 = cellsV[j], y1 = cellsV[j + 1];
     const piece = clipRect(P, x0, y0, x1, y1);
-    const a = piece.length >= 3 ? polygonArea(piece) : 0;
+    let a = piece.length >= 3 ? polygonArea(piece) : 0;
+    let holed = false;
+    for (const h of H) { const hp = clipRect(h, x0, y0, x1, y1); const ha = hp.length >= 3 ? polygonArea(hp) : 0; if (ha > 1e-4) { a -= ha; holed = true; } }
     if (a < 0.01) continue;
     const px = piece.map((p) => p[0]), py = piece.map((p) => p[1]);
     const w = Math.max(...px) - Math.min(...px), h = Math.max(...py) - Math.min(...py);
-    if (Math.abs(w - T) < 0.01 && Math.abs(h - V) < 0.01 && Math.abs(a - T * V) < 0.02) full++;
+    if (!holed && Math.abs(w - T) < 0.01 && Math.abs(h - V) < 0.01 && Math.abs(a - T * V) < 0.02) full++;
     else cutPieces.push({ w: Math.min(T, +w.toFixed(4)), h: Math.min(V, +h.toFixed(4)), room });
   }
   // mains: runs along v at each main line
-  const mainRuns = mains.flatMap((x) => chords(P, 0, x)).filter((l) => l > 0.05);
+  const mainRuns = mains.flatMap((x) => chordsH(0, x)).filter((l) => l > 0.05);
   // cross tees: along u at each v line, between neighbouring mains (whole) or wall–main (cut)
   let crossFull = 0, cross2Full = 0;
   const crossCuts: number[] = [], cross2Cuts: number[] = [];
   for (const y of vLines) {
-    for (const [a, b] of intervals(P, 1, y)) {
+    for (const [a, b] of ivs(1, y)) {
       const inside = mains.filter((x) => x > a + EPS && x < b - EPS);
       const stops = [a, ...inside, b];
       for (let k = 0; k + 1 < stops.length; k++) {
@@ -201,7 +211,7 @@ export function layoutRoom(polyFt: Pt[], spec: GridSpec, room = 0): RoomGrid {
   if (step > 1) {
     // 2×2: 2' cross tees on the u lines between mains, spanning between v lines
     const mids = uLines.filter((x) => !mains.includes(x));
-    for (const x of mids) for (const [a, b] of intervals(P, 0, x)) {
+    for (const x of mids) for (const [a, b] of ivs(0, x)) {
       const stops = [a, ...vLines.filter((y) => y > a + EPS && y < b - EPS), b];
       for (let k = 0; k + 1 < stops.length; k++) {
         const len = stops[k + 1] - stops[k];
@@ -210,7 +220,10 @@ export function layoutRoom(polyFt: Pt[], spec: GridSpec, room = 0): RoomGrid {
       }
     }
   }
-  const wallEdges = polyFt.map((p, i) => { const q = polyFt[(i + 1) % polyFt.length]; return Math.hypot(q[0] - p[0], q[1] - p[1]); }).filter((l) => l > 0.05);
+  const edges = (r: Pt[]) => r.map((p, i) => { const q = r[(i + 1) % r.length]; return Math.hypot(q[0] - p[0], q[1] - p[1]); });
+  // wall angle runs round the room and round every bulkhead/soffit inside it
+  const wallEdges = [...edges(polyFt), ...holesFt.filter((h) => h.length >= 3).flatMap(edges)].filter((l) => l > 0.05);
+  const holeArea = holesFt.reduce((n, h) => n + (h.length >= 3 ? polygonArea(h) : 0), 0);
   // hanger wires: along each main at ≤ 4' o.c., one within 8" of each end
   const wires = mainRuns.reduce((n, L) => n + Math.max(2, Math.ceil(L / 4) + 1), 0);
   const borders = {
@@ -224,7 +237,7 @@ export function layoutRoom(polyFt: Pt[], spec: GridSpec, room = 0): RoomGrid {
   if (vLines.length && borders.vLow < V / 2 - 0.01) slivers.push(`${fmt(borders.vLow)} border along one side (${fmt(v1 - v0)} across)`);
   if (vLines.length && borders.vHigh < V / 2 - 0.01 && Math.abs(borders.vHigh - borders.vLow) > 0.01) slivers.push(`${fmt(borders.vHigh)} border along the other side`);
   return {
-    room, areaSf: polygonArea(polyFt), perimeterLf: wallEdges.reduce((a, b) => a + b, 0),
+    room, areaSf: Math.max(0, polygonArea(polyFt) - holeArea), perimeterLf: wallEdges.reduce((a, b) => a + b, 0),
     fullTiles: full, cutPieces, borders,
     centered: { u: Math.abs(borders.uLow - borders.uHigh) < 0.05, v: Math.abs(borders.vLow - borders.vHigh) < 0.05 },
     slivers, mainRuns, crossFull, crossCuts, cross2Full, cross2Cuts, wallEdges, wires,
@@ -293,9 +306,9 @@ export function planSticks(lengths: number[], stick: number): { pieces: number; 
 }
 
 /** A whole job: rooms laid out, offcuts and tee ends shared across rooms. */
-export function planJob(rooms: { poly: Pt[]; spec: GridSpec }[], opts: { reuse?: boolean; mainStick?: number; angleStick?: number } = {}): JobGrid {
+export function planJob(rooms: { poly: Pt[]; spec: GridSpec; holes?: Pt[][] }[], opts: { reuse?: boolean; mainStick?: number; angleStick?: number } = {}): JobGrid {
   const reuse = opts.reuse !== false;
-  const laid = rooms.map((r, i) => layoutRoom(r.poly, r.spec, i));
+  const laid = rooms.map((r, i) => layoutRoom(r.poly, r.spec, i, r.holes || []));
   // tiles grouped by tile size (2×2 and 2×4 offcuts don't mix)
   const bySize = new Map<string, { T: number; V: number; pieces: Piece[]; full: number }>();
   laid.forEach((g, i) => {
@@ -395,44 +408,163 @@ export function detectGrid(segsFt: number[], polyFt: Pt[]): { theta: number; til
     const need = Math.max(1.5, Math.min(0.35 * span, 8));
     return merged.filter((m) => m.len >= need).map((m) => m.o);
   };
-  const best = (offs: number[]) => {
-    if (offs.length < 3) return null;
-    let bestFit = null as null | { pitch: number; phase: number; fit: number; err: number; n: number };
-    const span = Math.max(...offs) - Math.min(...offs);
-    for (const pitch of [2, 4, 600 / 304.8, 1200 / 304.8]) {
-      if (span < pitch * 1.5) continue;
-      // phase: the offset most others agree with
-      for (const ref of offs) {
-        const hits = new Set<number>();
-        let err = 0, n = 0;
-        for (const o of offs) { const k = Math.round((o - ref) / pitch); const r = Math.abs(o - ref - k * pitch); if (r < 0.08) { hits.add(k); err += r; n++; } }
-        const expected = Math.floor(span / pitch) + 1;
-        const fit = hits.size / expected;
-        if (hits.size < 3 || fit < 0.6) continue;   // most of the module's positions carry a line
-        err /= Math.max(1, n);
-        // the module that explains the most lines (a 4' reading of a 2' grid explains
-        // only half of them); then the one whose positions are all filled (a 2' reading
-        // of a 4' grid leaves gaps); then the most exact (4' vs 1200 mm); then the finer
-        const better = !bestFit || n > bestFit.n
-          || (n === bestFit.n && (fit > bestFit.fit + 1e-9
-            || (Math.abs(fit - bestFit.fit) <= 1e-9 && (err < bestFit.err - 0.005 || (Math.abs(err - bestFit.err) <= 0.005 && pitch < bestFit.pitch)))));
-        if (better) bestFit = { pitch, phase: ref, fit, err, n };
-      }
+  return fitFamilies(theta, fam(theta), fam(theta + Math.PI / 2));
+}
+
+const MODULES = [2, 4, 600 / 304.8, 1200 / 304.8];
+/** Best module and phase for one family's line offsets (ft), or null. */
+function fitModule(offs: number[], minHits = 3): { pitch: number; phase: number; fit: number; err: number; n: number } | null {
+  if (offs.length < minHits) return null;
+  let bestFit = null as null | { pitch: number; phase: number; fit: number; err: number; n: number };
+  const span = Math.max(...offs) - Math.min(...offs);
+  for (const pitch of MODULES) {
+    if (span < pitch * (minHits >= 3 ? 1.5 : 0.9)) continue;
+    // phase: the offset most others agree with
+    for (const ref of offs) {
+      const hits = new Set<number>();
+      let err = 0, n = 0;
+      for (const o of offs) { const k = Math.round((o - ref) / pitch); const r = Math.abs(o - ref - k * pitch); if (r < 0.08) { hits.add(k); err += r; n++; } }
+      const expected = Math.floor(span / pitch) + 1;
+      const fit = hits.size / expected;
+      if (hits.size < minHits || fit < 0.6) continue;   // most of the module's positions carry a line
+      err /= Math.max(1, n);
+      // the module that explains the most lines (a 4' reading of a 2' grid explains
+      // only half of them); then the one whose positions are all filled (a 2' reading
+      // of a 4' grid leaves gaps); then the most exact (4' vs 1200 mm); then the finer
+      const better = !bestFit || n > bestFit.n
+        || (n === bestFit.n && (fit > bestFit.fit + 1e-9
+          || (Math.abs(fit - bestFit.fit) <= 1e-9 && (err < bestFit.err - 0.005 || (Math.abs(err - bestFit.err) <= 0.005 && pitch < bestFit.pitch)))));
+      if (better) bestFit = { pitch, phase: ref, fit, err, n };
     }
-    return bestFit;
-  };
-  // family A: lines running along θ, spaced along nA = (−sinθ, cosθ)
-  // family B: lines running along θ+90°, spaced along nB = −(cosθ, sinθ)
-  const A = best(fam(theta)), B = best(fam(theta + Math.PI / 2));
+  }
+  return bestFit;
+}
+type GridRead = { theta: number; tileU: number; tileV: number; phaseU: number; phaseV: number; fit: number };
+/** Two families (A along θ, offsets along (−sinθ, cosθ); B along θ+90°) → the grid. */
+function fitFamilies(theta: number, offsA: number[], offsB: number[]): GridRead | null {
+  // a narrow room (a corridor) has only two lines across: one family may settle
+  // for two once the other has read cleanly
+  let A = fitModule(offsA), B = fitModule(offsB);
+  if (A && !B) B = fitModule(offsB, 2);
+  else if (B && !A) A = fitModule(offsA, 2);
   if (!A || !B) return null;
   // u runs along the tile's long side: the direction in which lines are spaced further apart.
-  // In the (u, v) frame, u = x·cos θu + y·sin θu and v = −x·sin θu + y·cos θu.
   if (B.pitch >= A.pitch) {
     // u along θ: the u-lines are family B (offsets along −u), the v-lines family A (offsets along v)
     return { theta, tileU: +B.pitch.toFixed(3), tileV: +A.pitch.toFixed(3), phaseU: -B.phase, phaseV: A.phase, fit: Math.min(A.fit, B.fit) };
   }
-  // u along θ+90°: the u-lines are family A (offsets along u), the v-lines family B (offsets along v)
   return { theta: theta + Math.PI / 2, tileU: +A.pitch.toFixed(3), tileV: +B.pitch.toFixed(3), phaseU: A.phase, phaseV: B.phase, fit: Math.min(A.fit, B.fit) };
+}
+
+/** The same reading from PIXELS: the room drawn from the PDF, dark pixels as
+ *  (x, y) pairs in sheet feet (already inside the room, walls trimmed). Works
+ *  whatever the PDF made the grid of — lines, a pattern fill, a scan. */
+export function detectGridRaster(dark: ArrayLike<number>, polyFt: Pt[], ftPerPx: number, theta0?: number): GridRead | null {
+  const n = dark.length >> 1;
+  if (n < 50) return null;
+  const bin = ftPerPx;
+  const profile = (ang: number) => {
+    const nx = -Math.sin(ang), ny = Math.cos(ang);
+    let lo = Infinity, hi = -Infinity;
+    for (const p of polyFt) { const o = p[0] * nx + p[1] * ny; if (o < lo) lo = o; if (o > hi) hi = o; }
+    const m = Math.ceil((hi - lo) / bin) + 3;
+    const h = new Float64Array(m);
+    for (let i = 0; i < n; i++) { const k = Math.floor((dark[2 * i] * nx + dark[2 * i + 1] * ny - lo) / bin) + 1; if (k >= 0 && k < m) h[k] += bin; }
+    return { h, lo };
+  };
+  const sharp = (ang: number) => { const { h } = profile(ang); let q = 0; for (let i = 0; i < h.length; i++) q += h[i] * h[i]; return q; };
+  // direction: a line family makes the profile peaky (sum of squares), checked
+  // at both families; walls already trimmed, so the grid dominates
+  const score = (a: number) => sharp(a) + sharp(a + Math.PI / 2);
+  let theta = theta0 ?? 0, bestS = -1;
+  const tryA = (a: number) => { const sc = score(a); if (sc > bestS) { bestS = sc; theta = a; } };
+  if (theta0 != null) tryA(theta0);
+  for (let d = 0; d < 90; d += 3) tryA((d * Math.PI) / 180);
+  const t1 = theta;
+  for (let d = -3; d <= 3; d += 0.5) tryA(t1 + (d * Math.PI) / 180);
+  theta = ((theta % (Math.PI / 2)) + Math.PI / 2) % (Math.PI / 2);
+  const peaks = (ang: number) => {
+    const tx = Math.cos(ang), ty = Math.sin(ang);
+    const along = polyFt.map((p) => p[0] * tx + p[1] * ty);
+    const span = Math.max(...along) - Math.min(...along);
+    const need = Math.max(1.5, Math.min(0.35 * span, 8));
+    const { h, lo } = profile(ang);
+    const out: number[] = [];
+    for (let i = 1; i + 1 < h.length; i++) {
+      const v = h[i - 1] + h[i] + h[i + 1];   // a line 1–3 px wide
+      if (v < need) continue;
+      const l = h[i - 2 >= 0 ? i - 2 : 0] + h[i - 1] + h[i], r = h[i] + h[i + 1] + (h[i + 2] || 0);
+      if (v >= l && v > r) out.push(lo + (i - 0.5) * bin);
+    }
+    return out;
+  };
+  return fitFamilies(theta, peaks(theta), peaks(theta + Math.PI / 2));
+}
+
+/** Which segments are ceiling-grid lines: members of a lattice of parallel lines
+ *  at a ceiling module (2', 4', 600, 1200) — a neighbour at ±1 module on both
+ *  sides, or at +1 and +2 one way. segs in px; pxPerFt the sheet scale. Lifting
+ *  them off the boundary mask lets a room fill cross the tiles to the walls. */
+export function classifyGridSegs(segs: ArrayLike<number>, pxPerFt: number): Uint8Array {
+  const n = segs.length >> 2;
+  const out = new Uint8Array(n);
+  const minLen = 1.2 * pxPerFt, tol = 0.07 * pxPerFt, ob = 0.05 * pxPerFt;
+  const key = (a: number, o: number) => a * 1e7 + o;
+  const idx = new Map<number, number[]>();   // angle bin (½°) × offset bin → seg ids
+  const A = new Int16Array(n), O = new Float64Array(n), L0 = new Float64Array(n), L1 = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const x1 = segs[4 * i], y1 = segs[4 * i + 1], x2 = segs[4 * i + 2], y2 = segs[4 * i + 3];
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    if (len < minLen) { A[i] = -1; continue; }
+    let th = Math.atan2(y2 - y1, x2 - x1); if (th < 0) th += Math.PI; if (th >= Math.PI) th -= Math.PI;
+    const ab = Math.round((th * 360) / Math.PI) % 360;    // ½° bins over 180°
+    const tA = (ab * Math.PI) / 360, nx = -Math.sin(tA), ny = Math.cos(tA), tx = Math.cos(tA), ty = Math.sin(tA);
+    A[i] = ab; O[i] = ((x1 + x2) / 2) * nx + ((y1 + y2) / 2) * ny;
+    const p = x1 * tx + y1 * ty, q = x2 * tx + y2 * ty;
+    L0[i] = Math.min(p, q); L1[i] = Math.max(p, q);
+    const k = key(ab, Math.round(O[i] / ob));
+    let l = idx.get(k); if (!l) idx.set(k, (l = [])); l.push(i);
+  }
+  const near = (i: number, off: number) => {
+    const want = O[i] + off, reach = 4 * pxPerFt;
+    for (let da = -1; da <= 1; da++) {
+      const ab = (A[i] + da + 360) % 360;
+      const b0 = Math.round((want - tol) / ob), b1 = Math.round((want + tol) / ob);
+      for (let b = b0; b <= b1; b++) {
+        const l = idx.get(key(ab, b)); if (!l) continue;
+        for (const j of l) if (j !== i && Math.abs(O[j] - want) <= tol && L1[j] > L0[i] - reach && L0[j] < L1[i] + reach) return true;
+      }
+    }
+    return false;
+  };
+  // a wall face has its other face close by, running with it (grid lines never do;
+  // a fixture's inset lines are too short to count)
+  const wallPair = (i: number) => {
+    const len = L1[i] - L0[i];
+    for (let da = -1; da <= 1; da++) {
+      const ab = (A[i] + da + 360) % 360;
+      const b0 = Math.floor((O[i] - 0.9 * pxPerFt) / ob), b1 = Math.ceil((O[i] + 0.9 * pxPerFt) / ob);
+      for (let b = b0; b <= b1; b++) {
+        const l = idx.get(key(ab, b)); if (!l) continue;
+        for (const j of l) {
+          const d = Math.abs(O[j] - O[i]);
+          if (j === i || d < 0.15 * pxPerFt || d > 0.9 * pxPerFt || L1[j] - L0[j] < 4.5 * pxPerFt) continue;   // 2×4 fixtures are 4′
+          const ov = Math.min(L1[i], L1[j]) - Math.max(L0[i], L0[j]);
+          if (ov >= 0.6 * Math.min(len, L1[j] - L0[j])) return true;
+        }
+      }
+    }
+    return false;
+  };
+  for (let i = 0; i < n; i++) {
+    if (A[i] < 0 || wallPair(i)) continue;
+    for (const m of MODULES) {
+      const P = m * pxPerFt;
+      const up = near(i, P), dn = near(i, -P);
+      if ((up && dn) || (up && near(i, 2 * P)) || (dn && near(i, -2 * P))) { out[i] = 1; break; }
+    }
+  }
+  return out;
 }
 
 // ── helpers for the canvas tool ─────────────────────────────────────────────
@@ -459,9 +591,9 @@ export function tileSizeFromText(text: string): { tileU: number; tileV: number }
 }
 
 /** Of the two orientations, the one that buys fewer tiles (then fewer cut pieces). */
-export function bestTurn(poly: Pt[], spec: GridSpec): number {
+export function bestTurn(poly: Pt[], spec: GridSpec, holes: Pt[][] = []): number {
   const score = (theta: number) => {
-    const g = layoutRoom(poly, { ...spec, theta });
+    const g = layoutRoom(poly, { ...spec, theta }, 0, holes);
     const t = planTileCuts(g.cutPieces, spec.tileU, spec.tileV);
     return (g.fullTiles + t.bought) * 1000 + g.cutPieces.length;
   };

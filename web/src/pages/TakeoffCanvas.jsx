@@ -224,7 +224,9 @@ import { fmtCheckLen, parseLenInput, checkVerdict, M_PER_FT, areaVal, areaUnit, 
 import * as panelGeom from "../lib/panelGeometry.js";
 import { findWalls, FEATURE_NAMES, FEATURE_VERSION } from "../lib/findWalls";
 import { scoreRun, isWallModel, featureIndexMap, DROP_BELOW, DOUBT_BELOW } from "../lib/wallModel";
-import { planJob, detectGrid, roomAngle, tileSizeFromText, bestTurn, fromGrid, fmtFtIn } from "../lib/ceilingGrid";
+import { planJob, detectGrid, detectGridRaster, roomAngle, tileSizeFromText, bestTurn, fromGrid, fmtFtIn } from "../lib/ceilingGrid";
+import { findGridRooms } from "../lib/ceilingRooms";
+import { DRYWALL_DEFAULTS } from "../lib/drywallDefaults";
 import { notesText, notesScore, locateNotes } from "../lib/notesFinder";
 import { legendSamples, matchWallStyles } from "../lib/legendStyles";
 import { typeUntaggedWalls, typeThickness } from "../lib/wallTypes";
@@ -5252,100 +5254,255 @@ export default function TakeoffCanvas() {
   };
 
   // ── AI tools → Ceiling grid ──────────────────────────────────────────────
-  // Room by room: every lay-in ceiling (a 2×2 or 2×4 assembly) drawn on this
-  // sheet gets its grid laid out — read from the RCP's own grid lines when the
-  // architect drew them ("as drawn"), otherwise centred with borders of at least
-  // half a tile. Each border piece is sized, and pieces are cut from the
-  // offcuts of other borders (any room, same tile) before a new tile is opened.
+  // Room by room: every grid ceiling on this sheet gets its grid laid out. The
+  // rooms come from two places: ceilings already drawn as takeoffs, and — with
+  // "Find rooms" on — every room on the sheet that has a ceiling grid drawn in
+  // it, found from the grid lines themselves (lib/ceilingRooms), so nobody has
+  // to trace a ceiling first. The grid is read from the drawing — from its
+  // lines, or from its pixels when the PDF made it a pattern fill — so the
+  // tile size, direction and line positions are the architect's ("as drawn");
+  // without a drawn grid it is centred with borders of at least half a tile.
+  // A drawn ceiling inside another (bulkhead, soffit, a drop at another height)
+  // and any closed outline inside a found room are holes: no tiles there, and
+  // wall angle around them. Assemblies can be left out (gypsum, bulkheads…);
+  // left-out ceilings still punch their holes. Each border piece is sized, and
+  // pieces are cut from other borders' offcuts (any room, same tile) before a
+  // new tile is opened.
   const CEIL_MODES = [["designed", "As drawn on the RCP"], ["balanced", "Centred (borders ≥ ½ tile)"], ["max_full", "Most full tiles"], ["wall", "Start at a wall"]];
+  const ceilStoreKey = `vt_ceil:${store?.projectId || projectName || "local"}`;
+  const ceilPrefs = () => { try { return JSON.parse(localStorage.getItem(ceilStoreKey) || "{}"); } catch { return {}; } };
+  const saveCeilPrefs = (p) => { try { localStorage.setItem(ceilStoreKey, JSON.stringify(p)); } catch { /* private mode */ } };
+  const [ceilBusy, setCeilBusy] = useState("");
   function ceilTileFor(c) {
     if (!c) return null;
     return tileSizeFromText([c.finish_tag, c.name, c.spec?.description, ...(c.materials || []).map((m) => m.name)].filter(Boolean).join(" · "));
   }
-  function runCeilingGrid() {
+  const isCeilingCond = (c) => !!c && (/ceil/i.test(c.category || "") || /\b(act|acoustic|lay-?in|ceiling tile|drop ceiling|suspended)\b/i.test(`${c.finish_tag || ""} ${c.name || ""} ${c.spec?.description || ""}`));
+  const ringCentroid = (r) => [r.reduce((a, p) => a + p[0], 0) / r.length, r.reduce((a, p) => a + p[1], 0) / r.length];
+  // the room's name from the plan text inside it ("RECEPTION", "EXAM 4")
+  function ceilRoomName(spans, ring) {
+    let best = null, bh = 0;
+    for (const t of spans || []) {
+      const s = (t.str || "").trim();
+      if (s.length < 3 || s.length > 28 || !/[A-Z]{3,}/.test(s) || /^(ACT|GWB|GYP|AFF|CLG|CEILING|EXIT|DN|UP|SIM|TYP)\b|\d\s*['′]|\d"$/i.test(s)) continue;
+      if (!pointInPoly((t.x0 + t.x1) / 2, (t.y0 + t.y1) / 2, ring)) continue;
+      const h = t.y1 - t.y0;
+      if (h > bh) { bh = h; best = s; }
+    }
+    return best;
+  }
+  // The grid read from PIXELS: the room drawn fresh from the PDF (white, never
+  // the dark-mode panel), walls and holes masked off. Catches grids the PDF
+  // stores as a pattern fill or an image, which leave no lines to read.
+  async function ceilRasterRead(key, polyPx, holesPx, upp) {
+    const pageObj = pageObjsRef.current.get(key);
+    if (!pageObj) return null;
+    const rs = renderScalesRef.current.get(key) || RENDER_SCALE;
+    const xs = polyPx.map((p) => p[0]), ys = polyPx.map((p) => p[1]);
+    const bx0 = Math.min(...xs), by0 = Math.min(...ys), bx1 = Math.max(...xs), by1 = Math.max(...ys);
+    const ppf = Math.min(14, 3600 / Math.max((bx1 - bx0) * upp, (by1 - by0) * upp, 1));
+    const f = ppf * upp;   // canvas px per panel px
+    const W = Math.max(2, Math.ceil((bx1 - bx0) * f)), H = Math.max(2, Math.ceil((by1 - by0) * f));
+    const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+    const ctx = cv.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+    await pageObj.render({ canvasContext: ctx, viewport: pageObj.getViewport({ scale: rs * f, offsetX: -bx0 * f, offsetY: -by0 * f }), background: "#ffffff" }).promise;
+    const img = ctx.getImageData(0, 0, W, H).data;
+    const mk = document.createElement("canvas"); mk.width = W; mk.height = H;
+    const m = mk.getContext("2d", { willReadFrequently: true });
+    const path = (ring) => { m.beginPath(); ring.forEach(([x, y], i) => (i ? m.lineTo((x - bx0) * f, (y - by0) * f) : m.moveTo((x - bx0) * f, (y - by0) * f))); m.closePath(); };
+    m.fillStyle = "#000"; m.fillRect(0, 0, W, H);
+    m.fillStyle = "#fff"; path(polyPx); m.fill();
+    m.strokeStyle = "#000"; m.lineWidth = 0.8 * ppf; path(polyPx); m.stroke();
+    m.fillStyle = "#000"; for (const h of holesPx) { path(h); m.fill(); m.stroke(); }
+    const mm = m.getImageData(0, 0, W, H).data;
+    const dark = [];
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      if (mm[i] < 128) continue;
+      if (0.2126 * img[i] + 0.7152 * img[i + 1] + 0.0722 * img[i + 2] < 170) dark.push((bx0 + (x + 0.5) / f) * upp, (by0 + (y + 0.5) / f) * upp);
+    }
+    cv.width = cv.height = mk.width = mk.height = 0;
+    const polyFt = polyPx.map(([x, y]) => [x * upp, y * upp]);
+    return detectGridRaster(dark, polyFt, 1 / ppf, roomAngle(polyFt));
+  }
+  const stdTile = (det) => {
+    const near = (x, y) => Math.abs(x - y) < 0.12;
+    if (near(det.tileU, 2) && near(det.tileV, 2)) return { tileU: 2, tileV: 2 };
+    if (near(det.tileU, 4) && near(det.tileV, 2)) return { tileU: 4, tileV: 2 };
+    return null;
+  };
+  async function runCeilingGrid() {
+    if (ceilBusy) return;
     const tp = focusPanel;
     if (!tp || !tp.img.w) { setCommitMsg("Open a sheet first."); return; }
-    const upp = uppFor(tp.key);
+    const key = tp.key;
+    const upp = uppFor(key);
     if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first — the ceiling grid is laid out in real feet.`); return; }
+    const prefs = ceilPrefs();
+    const exclude = new Set(prefs.exclude || []);
+    const auto = prefs.auto !== false;
     const byId = Object.fromEntries(conditions.map((c) => [c.id, c]));
-    const isCeiling = (c) => c && (/ceil/i.test(c.category || "") || /\b(act|acoustic|lay-?in|ceiling tile)\b/i.test(`${c.finish_tag || ""} ${c.name || ""} ${c.spec?.description || ""}`));
-    const areas = shapes.filter((s) => s.sheet_id === tp.key && s.measure_role === "floor_area" && isCeiling(byId[s.condition_id]));
-    if (!areas.length) {
-      setCommitMsg(`Draw the ceilings on ${labelFor(tp)} first (Area, or One-Click on the reflected ceiling plan) with a ceiling assembly, then run Ceiling grid.`);
-      return;
-    }
-    const segs = vectorSegsRef.current.get(tp.key);
+    const segs = vectorSegsRef.current.get(key);
     const segsFt = segs && segs.length ? Array.from(segs, (v) => v * upp) : [];
-    // tile size: the assembly says it, else the grid drawn in the room shows it, else 2×2 until you pick
-    const std = (det) => {
-      const near = (x, y) => Math.abs(x - y) < 0.12;
-      if (near(det.tileU, 2) && near(det.tileV, 2)) return { tileU: 2, tileV: 2 };
-      if (near(det.tileU, 4) && near(det.tileV, 2)) return { tileU: 4, tileV: 2 };
-      return null;
-    };
-    const rooms = areas.map((s, i) => {
-      const c = byId[s.condition_id];
-      const polyPx = s.verts_norm.map(([x, y]) => [x * tp.img.w, y * tp.img.h]);
-      const polyFt = polyPx.map(([x, y]) => [x * upp, y * upp]);
-      let det = null;
-      try { det = segsFt.length ? detectGrid(segsFt, polyFt) : null; } catch { det = null; }
-      const said = ceilTileFor(c), seen = det && std(det);
-      const tile = said || seen || { tileU: 2, tileV: 2 };
-      const tileFrom = said ? "assembly" : seen ? "drawing" : "guess";
-      const label = s.label || `${c.finish_tag || "Ceiling"} · room ${i + 1}`;
-      const base = { id: s.id, label, tag: c.finish_tag || "", condId: c.id, tile, tileFrom, polyFt, polyPx, holes: !!s.verts_norm_holes?.length, detected: det };
-      const sameModule = det && Math.abs(det.tileU - tile.tileU) < 0.12 && Math.abs(det.tileV - tile.tileV) < 0.12;
-      if (sameModule) return { ...base, theta: det.theta, mode: "designed", note: "" };
-      const theta0 = det ? det.theta : roomAngle(polyFt);
-      const theta = bestTurn(polyFt, { tileU: tile.tileU, tileV: tile.tileV, theta: theta0, mode: "balanced" });
-      const note = tileFrom === "guess" ? "No tile size in the assembly and no grid drawn here — set it to 2×2 or 2×4 below."
-        : det ? `The RCP's grid here reads ${fmtFtIn(det.tileV)} × ${fmtFtIn(det.tileU)}, but ${c.finish_tag || "the assembly"} is ${tile.tileV}×${tile.tileU} — laid out centred instead.` : "";
-      return { ...base, theta, mode: "balanced", note };
-    });
+    const toPx = (vn) => vn.map(([x, y]) => [x * tp.img.w, y * tp.img.h]);
+    const toFt = (px) => px.map(([x, y]) => [x * upp, y * upp]);
     setWallFind(null);
-    setCeilGrid({ key: tp.key, sheet: labelFor(tp), upp, rooms, reuse: true, sel: null });
-    const drawn = rooms.filter((r) => r.mode === "designed").length;
-    const fromDrawing = rooms.filter((r) => r.tileFrom === "drawing").length;
-    const guessed = rooms.filter((r) => r.tileFrom === "guess").length;
-    setCommitMsg(`Ceiling grid: ${rooms.length} room${rooms.length === 1 ? "" : "s"} laid out${drawn ? ` — ${drawn} read from the grid drawn on the RCP` : ""}${fromDrawing ? `; tile size taken from the drawing in ${fromDrawing}` : ""}${guessed ? `; ${guessed} need a tile size (set 2×2 / 2×4 in the panel)` : ""}.`);
+    setCeilBusy("Reading the ceilings…");
+    try {
+      const spans = await ensureTextSpans(key).catch(() => []);
+      const drawn = shapes.filter((s) => s.sheet_id === key && s.measure_role === "floor_area" && isCeilingCond(byId[s.condition_id]))
+        .map((s) => ({ s, c: byId[s.condition_id], px: toPx(s.verts_norm), holesPx: (s.verts_norm_holes || []).map(toPx) }));
+      const nested = (inner, outer) => inner !== outer && ringArea(outer.px) > ringArea(inner.px) && pointInPoly(...ringCentroid(inner.px), outer.px);
+      const makeRoom = async (b) => {
+        const polyFt = toFt(b.polyPx), holesFt = b.holesPx.map(toFt);
+        let det = null, how = "";
+        try { det = segsFt.length ? detectGrid(segsFt, polyFt) : null; if (det) how = "lines"; } catch { det = null; }
+        if (!det && !b.excluded) { try { det = await ceilRasterRead(key, b.polyPx, b.holesPx, upp); if (det) how = "pixels"; } catch { det = null; } }
+        const seen = det && stdTile(det);
+        const tile = b.said || seen || { tileU: 2, tileV: 2 };
+        const tileFrom = b.said ? "assembly" : seen ? "drawing" : "guess";
+        const r = { ...b, polyFt, holesFt, tile, tileFrom, detected: det, how, include: b.source === "takeoff" || !!det };
+        if (ceilMatches(r)) return { ...r, theta: det.theta, mode: "designed", note: "" };
+        const theta0 = det ? det.theta : roomAngle(polyFt);
+        const theta = bestTurn(polyFt, { tileU: tile.tileU, tileV: tile.tileV, theta: theta0, mode: "balanced" }, holesFt);
+        const note = tileFrom === "guess" ? (b.source === "found" ? "Grid lines run through this space but the grid couldn't be read — tick it and set 2×2 / 2×4 if it's a grid ceiling." : "No tile size in the assembly and no grid read here — set 2×2 or 2×4 below.")
+          : det && !ceilMatches(r) ? `The drawing's grid here reads ${fmtFtIn(det.tileV)} × ${fmtFtIn(det.tileU)}, but ${b.tag || "the assembly"} is ${tile.tileV}×${tile.tileU} — laid out centred instead.` : "";
+        return { ...r, theta, mode: "balanced", note };
+      };
+      const rooms = [];
+      for (const d of drawn) {
+        const holesPx = [...d.holesPx, ...drawn.filter((o) => nested(o, d)).map((o) => o.px)];
+        rooms.push(await makeRoom({ source: "takeoff", id: d.s.id, label: ceilRoomName(spans, d.px) || d.c.finish_tag || "Ceiling", condId: d.c.id, tag: d.c.finish_tag || "", said: ceilTileFor(d.c), polyPx: d.px, holesPx, excluded: exclude.has(d.c.id) }));
+      }
+      let found = 0, unread = 0;
+      if (auto && segs && segs.length) {
+        setCeilBusy("Finding the grid ceilings on this sheet…");
+        const dims = panelImgs[key] || tp.img;
+        const res = await findGridRooms({ segs, w: dims.w, h: dims.h, pxPerFt: 1 / upp, skip: drawn.map((d) => d.px),
+          onProgress: (a, b) => setCeilBusy(`Finding the grid ceilings on this sheet… ${Math.round((100 * a) / Math.max(1, b))}%`) });
+        const drawnRings = drawn.map((d) => d.px);
+        // most of it already drawn as a takeoff → not a new room
+        const overlap = (ring) => {
+          const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]), step = 1 / upp;
+          let n = 0, hit = 0;
+          for (let x = Math.min(...xs); x <= Math.max(...xs); x += step) for (let y = Math.min(...ys); y <= Math.max(...ys); y += step) {
+            if (!pointInPoly(x, y, ring)) continue;
+            n++; if (drawnRings.some((d) => pointInPoly(x, y, d))) hit++;
+          }
+          return n ? hit / n : 0;
+        };
+        for (const fr of res.rooms) {
+          if (fr.areaSf < 20 || overlap(fr.ring) > 0.4) continue;
+          const holesPx = [...fr.holes, ...drawnRings.filter((d) => { const c = ringCentroid(d); return pointInPoly(c[0], c[1], fr.ring) && !fr.holes.some((h) => pointInPoly(c[0], c[1], h)); })];
+          found++;
+          const r = await makeRoom({ source: "found", id: `found-${found}`, label: ceilRoomName(spans, fr.ring) || `Room ${found}`, condId: null, tag: "", said: null, polyPx: fr.ring, holesPx, excluded: false });
+          if (!r.detected) unread++;
+          rooms.push(r);
+          if (found % 4 === 0) setCeilBusy(`Reading the grid in each room… ${found} found`);
+        }
+      }
+      if (!rooms.length) {
+        setCommitMsg(auto
+          ? `No grid ceilings found on ${labelFor(tp)}${segs && segs.length ? "" : " (no CAD linework — it may be a scan)"} and none drawn. Draw them with Area or One-Click, then run Ceiling grid again.`
+          : `Draw the ceilings on ${labelFor(tp)} first (Area or One-Click), or turn on "Find rooms" in the Ceiling grid panel.`);
+        if (!auto) setCeilGrid({ key, sheet: labelFor(tp), upp, rooms: [], reuse: true, sel: null });
+        return;
+      }
+      setCeilGrid({ key, sheet: labelFor(tp), upp, rooms, reuse: true, sel: null });
+      const drawnAsIs = rooms.filter((r) => r.mode === "designed" && r.include).length;
+      setCommitMsg(`Ceiling grid: ${rooms.filter((r) => r.include && !r.excluded).length} room${rooms.length === 1 ? "" : "s"} laid out${found ? ` (${found - unread} found on the sheet${unread ? `, ${unread} more with grid lines to check` : ""})` : ""}${drawnAsIs ? ` — ${drawnAsIs} as drawn on the RCP` : ""}.`);
+    } finally {
+      setCeilBusy("");
+    }
   }
   // a room's layout spec (as-drawn uses the drawing's own module, direction and line positions)
   const ceilMatches = (r) => !!r.detected && Math.abs(r.detected.tileU - r.tile.tileU) < 0.12 && Math.abs(r.detected.tileV - r.tile.tileV) < 0.12;
   const ceilSpec = (r) => (r.mode === "designed" && ceilMatches(r)
     ? { tileU: r.detected.tileU, tileV: r.detected.tileV, theta: r.detected.theta, mode: "designed", phaseU: r.detected.phaseU, phaseV: r.detected.phaseV }
     : { tileU: r.tile.tileU, tileV: r.tile.tileV, theta: r.theta, mode: r.mode === "designed" ? "balanced" : r.mode });
+  // the rooms being laid out (ticked, assembly not left out), and where each sits in the job
+  const ceilLive = useMemo(() => (ceilGrid ? ceilGrid.rooms.map((r, i) => ({ r, i })).filter(({ r }) => r.include && !r.excluded) : []), [ceilGrid]);
   const ceilJob = useMemo(() => {
-    if (!ceilGrid?.rooms.length) return null;
-    try { return planJob(ceilGrid.rooms.map((r) => ({ poly: r.polyFt, spec: ceilSpec(r) })), { reuse: ceilGrid.reuse }); } catch (err) { console.warn("ceiling grid", err); return null; }
-  }, [ceilGrid]);
+    if (!ceilGrid || !ceilLive.length) return null;
+    try { return planJob(ceilLive.map(({ r }) => ({ poly: r.polyFt, spec: ceilSpec(r), holes: r.holesFt })), { reuse: ceilGrid.reuse }); } catch (err) { console.warn("ceiling grid", err); return null; }
+  }, [ceilLive, ceilGrid?.reuse]);
+  const ceilJobIndex = useMemo(() => new Map(ceilLive.map(({ i }, j) => [i, j])), [ceilLive]);
   const ceilRoomPatch = (i, patch) => setCeilGrid((g) => g && { ...g, rooms: g.rooms.map((r, k) => (k === i ? { ...r, ...patch } : r)) });
+  function ceilSetAuto(on) { saveCeilPrefs({ ...ceilPrefs(), auto: on }); }
+  function ceilToggleAssembly(condId, on) {
+    const p = ceilPrefs();
+    const ex = new Set(p.exclude || []);
+    if (on) ex.delete(condId); else ex.add(condId);
+    saveCeilPrefs({ ...p, exclude: [...ex] });
+    setCeilGrid((g) => g && { ...g, rooms: g.rooms.map((r) => (r.condId === condId ? { ...r, excluded: !on } : r)) });
+  }
+  // found rooms → takeoffs, on the ceiling assembly for their tile (made from
+  // the standard ACT 2×2 / 2×4 assembly when the project has none)
+  function ceilAddFound() {
+    const g = ceilGrid;
+    const tp = g && panelByKey(g.key);
+    if (!tp || !tp.img.w) return;
+    const upp = uppFor(g.key);
+    const todo = g.rooms.map((r, i) => ({ r, i })).filter(({ r }) => r.source === "found" && r.include && !r.excluded);
+    if (!todo.length) return;
+    const pick = new Map();
+    const condFor = (tile) => {
+      const k = `${tile.tileV}x${tile.tileU}`;
+      if (pick.has(k)) return pick.get(k);
+      let c = conditions.find((x) => isCeilingCond(x) && (x.measure === "area" || !x.measure) && (() => { const t = ceilTileFor(x); return t && t.tileU === tile.tileU && t.tileV === tile.tileV; })());
+      if (!c) {
+        const tpl = DRYWALL_DEFAULTS.find((x) => x.finish_tag === (tile.tileU === 4 ? "C2" : "C1"));
+        const { finish_tag: _t, ...rest } = tpl || {};
+        c = mintCondition(`ACT ${tile.tileV}×${tile.tileU}`, { ...(tpl ? rest : { category: "Ceilings", measure: "area" }) });
+      }
+      pick.set(k, c);
+      return c;
+    };
+    const toVn = (ring) => ring.map(([x, y]) => [x / tp.img.w, y / tp.img.h]);
+    const made = todo.map(({ r }) => {
+      const c = condFor(r.tile);
+      const met = polyWithHolesMetrics(r.polyPx, r.holesPx);
+      return {
+        sheet_id: g.key, condition_id: c.id, measure_role: "floor_area",
+        verts_norm: toVn(r.polyPx), ...(r.holesPx.length ? { verts_norm_holes: r.holesPx.map(toVn) } : {}),
+        computed: { area_sf: +(met.area * upp * upp).toFixed(2), perimeter_lf: +(met.perim * upp).toFixed(2) },
+        origin: { method: "ceiling_grid" },
+      };
+    });
+    dispatchShape({ type: "add", shapes: made });
+    const added = new Map(todo.map(({ r, i }) => [i, condFor(r.tile)]));
+    setCeilGrid((x) => x && { ...x, rooms: x.rooms.map((r, i) => (added.has(i) ? { ...r, source: "takeoff", condId: added.get(i).id, tag: added.get(i).finish_tag, said: r.tile } : r)) });
+    setCommitMsg(`Added ${made.length} ceiling${made.length === 1 ? "" : "s"} to the takeoff as ${[...pick.values()].map((c) => c.finish_tag).join(" / ")} — ⌘Z undoes.`);
+  }
   // the assembly's own rule of thumb (tiles per SF) for comparison
-  function ceilFactorTiles(g) {
+  function ceilFactorTiles() {
     let n = 0, any = false;
     const area = new Map();
-    g.rooms.forEach((r, i) => area.set(r.condId, (area.get(r.condId) || 0) + (ceilJob?.rooms[i]?.areaSf || 0)));
-    for (const [cid, sf] of area) {
-      const c = conditions.find((x) => x.id === cid);
+    ceilLive.forEach(({ r }, j) => { const k = r.condId || `tile:${r.tile.tileV}x${r.tile.tileU}`; area.set(k, (area.get(k) || 0) + (ceilJob?.rooms[j]?.areaSf || 0)); });
+    for (const [k, sf] of area) {
+      const c = conditions.find((x) => x.id === k) || DRYWALL_DEFAULTS.find((x) => x.finish_tag === (k === "tile:2x4" ? "C2" : k === "tile:2x2" ? "C1" : ""));
       const m = (c?.materials || []).find((x) => /tile/i.test(x.name || "") && x.basis === "area" && x.per > 0);
       if (m) { any = true; n += Math.ceil(sf / m.per); }
     }
     return any ? n : null;
   }
   function ceilMaterialText(g, job) {
-    const sizes = [...new Set(g.rooms.map((r) => `${r.tile.tileV}×${r.tile.tileU}`))].join(" / ");
+    const sizes = [...new Set(ceilLive.map(({ r }) => `${r.tile.tileV}×${r.tile.tileU}`))].join(" / ");
     const L = [
-      `Ceiling grid — ${g.sheet} — ${g.rooms.length} room${g.rooms.length === 1 ? "" : "s"}, ${Math.round(job.rooms.reduce((a, r) => a + r.areaSf, 0))} SF`,
+      `Ceiling grid — ${g.sheet} — ${ceilLive.length} room${ceilLive.length === 1 ? "" : "s"}, ${Math.round(job.rooms.reduce((a, r) => a + r.areaSf, 0))} SF`,
       `Ceiling tile ${sizes}: ${job.tiles.bought} (${job.tiles.full} full + ${job.tiles.bought - job.tiles.full} cut into ${job.tiles.cut} border pieces; ${job.tiles.fromOffcuts} pieces from offcuts; ${job.tiles.wasteSf} SF waste)`,
       `Main tee 12': ${job.mains.pieces} pc (${Math.round(job.mains.lf)} LF)`,
       `Cross tee 4': ${job.cross4.pieces} pc (${job.cross4.whole} whole, ${job.cross4.cuts} border pieces${job.cross4.reusedCuts ? `, ${job.cross4.reusedCuts} from the other end of a cut tee` : ""})`,
       ...(job.cross2.pieces ? [`Cross tee 2': ${job.cross2.pieces} pc (${job.cross2.whole} whole, ${job.cross2.cuts} border pieces)`] : []),
-      `Wall angle 12': ${job.wallAngle.pieces} pc (${Math.round(job.wallAngle.lf)} LF)`,
+      `Wall angle 12': ${job.wallAngle.pieces} pc (${Math.round(job.wallAngle.lf)} LF, incl. round bulkheads)`,
       `Hanger wire + anchor: ${job.wires} ea`,
       "",
       "Border cuts:",
       ...job.cutList.map((c) => `  ${c.n} × ${c.size} (${c.tile} tile)${c.fromOffcuts ? ` — ${c.fromOffcuts} from offcuts` : ""}`),
       "",
-      ...g.rooms.map((r, i) => { const q = job.rooms[i]; return `${r.label}: ${Math.round(q.areaSf)} SF, ${q.fullTiles} full + ${q.cutPieces.length} cut; borders ${fmtFtIn(q.borders.uLow)} / ${fmtFtIn(q.borders.uHigh)} × ${fmtFtIn(q.borders.vLow)} / ${fmtFtIn(q.borders.vHigh)}${q.centered.u && q.centered.v ? " (centred)" : ""}`; }),
+      ...ceilLive.map(({ r }, j) => { const q = job.rooms[j]; return `${j + 1}. ${r.label}: ${Math.round(q.areaSf)} SF, ${q.fullTiles} full + ${q.cutPieces.length} cut; borders ${fmtFtIn(q.borders.uLow)} / ${fmtFtIn(q.borders.uHigh)} × ${fmtFtIn(q.borders.vLow)} / ${fmtFtIn(q.borders.vHigh)}${q.centered.u && q.centered.v ? " (centred)" : ""}`; }),
     ];
     return L.join("\n");
   }
@@ -11199,37 +11356,46 @@ export default function TakeoffCanvas() {
                         Handles (corner diamonds + edge grips) rise on the hovered/selected
                         region: drag a corner, drag an edge to move the whole line, Shift-click
                         an edge to add a point, select a corner + Delete to remove it. */}
-                    {/* Ceiling grid — each room's grid clipped to the room: mains heavy,
-                        cross tees light; border strips amber, slivers (< ½ tile) red */}
-                    {ceilGrid && ceilJob && ceilGrid.key === p.key && (
+                    {/* Ceiling grid — each room's grid clipped to the room (holes cut out):
+                        mains heavy, cross tees light; border strips amber, slivers (< ½ tile)
+                        red; bulkheads/soffits grey; rooms not ticked are dashed outlines */}
+                    {ceilGrid && ceilGrid.key === p.key && (
                       <g data-ceiling-grid style={{ pointerEvents: "none" }}>
                         {ceilGrid.rooms.map((r, i) => {
-                          const g = ceilJob.rooms[i];
-                          if (!g) return null;
+                          const z = tf.scale;
+                          const ringPts = (ring) => ring.map((q) => q.join(",")).join(" ");
+                          const room = ringPts(r.polyPx);
+                          const j = ceilJobIndex.get(i);
+                          const g = j != null && ceilJob ? ceilJob.rooms[j] : null;
+                          if (!g) {
+                            if (r.excluded) return null;
+                            return <polygon key={"cg" + r.id} points={room} fill="none" stroke="#b45309" strokeWidth={1.6 / z} strokeDasharray={`${6 / z} ${4 / z}`} />;
+                          }
                           const th = g.frame.theta, U = ceilGrid.upp;
                           const sp = ceilSpec(r);
                           const P = (u, v) => { const [x, y] = fromGrid(u, v, th); return [x / U, y / U]; };
                           const band = (a0, a1, b0, b1) => [P(a0, b0), P(a1, b0), P(a1, b1), P(a0, b1)].map((q) => q.join(",")).join(" ");
                           const { u0, u1, v0, v1 } = g.extent;
-                          const lu = g.lines.u, lv = g.lines.v, z = tf.scale;
+                          const lu = g.lines.u, lv = g.lines.v;
                           const bands = [];
                           if (lu.length) { bands.push([u0, lu[0], v0, v1, g.borders.uLow < sp.tileU / 2 - 0.01]); bands.push([lu[lu.length - 1], u1, v0, v1, g.borders.uHigh < sp.tileU / 2 - 0.01]); }
                           if (lv.length) { bands.push([u0, u1, v0, lv[0], g.borders.vLow < sp.tileV / 2 - 0.01]); bands.push([u0, u1, lv[lv.length - 1], v1, g.borders.vHigh < sp.tileV / 2 - 0.01]); }
                           const sel = ceilGrid.sel === i;
-                          const cx = r.polyPx.reduce((a, q) => a + q[0], 0) / r.polyPx.length, cy = r.polyPx.reduce((a, q) => a + q[1], 0) / r.polyPx.length;
-                          const room = r.polyPx.map((q) => q.join(",")).join(" ");
+                          const [cx, cy] = ringCentroid(r.polyPx);
+                          const d = `M${r.polyPx.map((q) => q.join(",")).join("L")}Z` + r.holesPx.map((h) => `M${h.map((q) => q.join(",")).join("L")}Z`).join("");
                           return (
                             <g key={"cg" + r.id}>
-                              <clipPath id={`cg-clip-${i}`}><polygon points={room} /></clipPath>
+                              <clipPath id={`cg-clip-${i}`}><path d={d} clipRule="evenodd" /></clipPath>
                               <g clipPath={`url(#cg-clip-${i})`}>
-                                <polygon points={room} fill="#0d9488" fillOpacity={0.06} />
+                                <path d={d} fillRule="evenodd" fill="#0d9488" fillOpacity={0.07} />
                                 {bands.map(([a0, a1, b0, b1, thin], k) => <polygon key={k} points={band(a0, a1, b0, b1)} fill={thin ? "#dc2626" : "#f59e0b"} fillOpacity={thin ? 0.3 : 0.18} />)}
                                 {lv.map((v) => { const [a, b] = [P(u0 - 1, v), P(u1 + 1, v)]; return <line key={"v" + v} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#0f766e" strokeWidth={1 / z} strokeOpacity={0.85} />; })}
                                 {lu.map((u) => { const main = g.lines.mains.includes(u); const [a, b] = [P(u, v0 - 1), P(u, v1 + 1)]; return <line key={"u" + u} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#0f766e" strokeWidth={(main ? 2.4 : 1) / z} strokeOpacity={main ? 1 : 0.85} />; })}
                               </g>
+                              {r.holesPx.map((h, k) => <polygon key={"h" + k} points={ringPts(h)} fill="#6b7280" fillOpacity={0.25} stroke="#4b5563" strokeWidth={1.2 / z} strokeDasharray={`${3 / z} ${2 / z}`} />)}
                               <polygon points={room} fill="none" stroke={sel ? "#1f5cff" : "#0f766e"} strokeWidth={(sel ? 3.5 : 1.8) / z} strokeLinejoin="round" />
-                              <circle cx={cx} cy={cy} r={11 / z} fill={sel ? "#1f5cff" : "#0f766e"} stroke="#fff" strokeWidth={1.5 / z} />
-                              <text x={cx} y={cy + 4 / z} textAnchor="middle" fontSize={11 / z} fontWeight={700} fill="#fff">{i + 1}</text>
+                              <circle cx={cx} cy={cy} r={11 / z} fill={sel ? "#1f5cff" : r.source === "found" ? "#7c3aed" : "#0f766e"} stroke="#fff" strokeWidth={1.5 / z} />
+                              <text x={cx} y={cy + 4 / z} textAnchor="middle" fontSize={11 / z} fontWeight={700} fill="#fff">{j + 1}</text>
                             </g>
                           );
                         })}
@@ -11830,37 +11996,72 @@ export default function TakeoffCanvas() {
           );
         })()}
         {schedOpen && <ScheduleReader findSchedule={findProjectSchedule} renderSheet={renderSheetImage} visibleArea={visibleSheetArea} currentSheet={currentSheetLabel()} onClose={() => setSchedOpen(false)} onAdd={addScheduleAssemblies} />}
-        {ceilGrid && ceilJob && (() => {
+        {ceilBusy && (
+          <div style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 340, padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5, color: "var(--ink)" }}>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6 }}>Ceiling grid</div>
+            <div>{ceilBusy}</div>
+            <div style={{ height: 3, marginTop: 8, background: "var(--ink-faint)", overflow: "hidden" }}><div style={{ width: `${Math.max(8, Number((ceilBusy.match(/(\d+)%/) || [])[1]) || 35)}%`, height: "100%", background: "var(--cobalt)", transition: "width .2s" }} /></div>
+          </div>
+        )}
+        {ceilGrid && !ceilBusy && (() => {
           const job = ceilJob, g = ceilGrid;
-          const factor = ceilFactorTiles(g);
-          const saved = job.tiles.naiveBought - job.tiles.bought;
+          const factor = job ? ceilFactorTiles() : null;
+          const saved = job ? job.tiles.naiveBought - job.tiles.bought : 0;
           const row = { display: "flex", justifyContent: "space-between", gap: 8, padding: "2px 0" };
+          const prefs = ceilPrefs();
+          const assemblies = [...new Map(g.rooms.filter((r) => r.condId).map((r) => [r.condId, conditions.find((c) => c.id === r.condId)])).values()].filter(Boolean);
+          const foundToAdd = g.rooms.filter((r) => r.source === "found" && r.include && !r.excluded).length;
+          const listed = g.rooms.map((r, i) => ({ r, i })).filter(({ r }) => !r.excluded);
+          const head = { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 2 };
           return (
-            <div data-ceiling-grid-panel style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 340, maxHeight: "68%", overflowY: "auto", padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5, color: "var(--ink)" }}>
+            <div data-ceiling-grid-panel style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 350, maxHeight: "72%", overflowY: "auto", padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5, color: "var(--ink)" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                 <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55 }}>Ceiling grid — {g.sheet}</span>
                 <button type="button" onClick={() => setCeilGrid(null)} title="Close the ceiling grid" style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--ink)", padding: 2 }}><Icon name="close" size={14} /></button>
               </div>
-              <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.1 }}>{job.tiles.bought} tiles</div>
-              <div style={{ opacity: 0.75, marginBottom: 6 }}>
-                {job.tiles.full} full + {job.tiles.bought - job.tiles.full} cut into {job.tiles.cut} border pieces · {job.tiles.wasteSf} SF waste
-              </div>
-              {g.reuse && job.tiles.fromOffcuts > 0 && <div style={{ padding: "6px 8px", background: "#ecfdf5", border: "1px solid #10b981", marginBottom: 6 }}><b>{job.tiles.fromOffcuts}</b> border pieces come from other borders' offcuts — <b>{saved}</b> fewer tiles than cutting every piece from a new tile ({job.tiles.naiveBought}).</div>}
-              {factor != null && <div style={{ opacity: 0.7, marginBottom: 6 }}>The assembly's rule of thumb would order {factor} ({factor >= job.tiles.bought ? `${factor - job.tiles.bought} more` : `${job.tiles.bought - factor} fewer`}).</div>}
-              <label style={{ display: "flex", alignItems: "center", gap: 6, margin: "4px 0 8px", cursor: "pointer" }}>
-                <input type="checkbox" checked={g.reuse} onChange={(e) => setCeilGrid((x) => x && { ...x, reuse: e.target.checked })} />
-                Cut border pieces from offcuts (any room, same tile)
-              </label>
+              {job ? (<>
+                <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.1 }}>{job.tiles.bought} tiles</div>
+                <div style={{ opacity: 0.75, marginBottom: 6 }}>{job.tiles.full} full + {job.tiles.bought - job.tiles.full} cut into {job.tiles.cut} border pieces · {job.tiles.wasteSf} SF waste · {Math.round(job.rooms.reduce((a, q) => a + q.areaSf, 0))} SF</div>
+                {g.reuse && job.tiles.fromOffcuts > 0 && <div style={{ padding: "6px 8px", background: "#ecfdf5", border: "1px solid #10b981", marginBottom: 6 }}><b>{job.tiles.fromOffcuts}</b> border pieces come from other borders' offcuts — <b>{saved}</b> fewer tiles than cutting every piece from a new tile ({job.tiles.naiveBought}).</div>}
+                {factor != null && <div style={{ opacity: 0.7, marginBottom: 6 }}>The assembly's rule of thumb would order {factor} ({factor >= job.tiles.bought ? `${factor - job.tiles.bought} more` : `${job.tiles.bought - factor} fewer`}).</div>}
+              </>) : <div style={{ opacity: 0.7, marginBottom: 6 }}>No rooms ticked.</div>}
+              {foundToAdd > 0 && (
+                <button type="button" onClick={ceilAddFound} title="Make the found rooms ceiling takeoffs (on the ACT 2×2 / 2×4 assembly for their tile)"
+                  style={{ width: "100%", padding: "6px 10px", marginBottom: 8, border: "1px solid #7c3aed", background: "#7c3aed", color: "#fff", fontWeight: 600, cursor: "pointer" }}>Add {foundToAdd} found room{foundToAdd === 1 ? "" : "s"} to the takeoff</button>
+              )}
               <div style={{ borderTop: "1px solid var(--ink-faint)", paddingTop: 6, marginBottom: 6 }}>
-                <div style={row}><span>Main tee 12'</span><b>{job.mains.pieces}</b></div>
-                <div style={row}><span>Cross tee 4'{job.cross4.cuts ? <span style={{ opacity: 0.6 }}> · {job.cross4.cuts} border pieces{job.cross4.reusedCuts ? `, ${job.cross4.reusedCuts} paired on one tee` : ""}</span> : null}</span><b>{job.cross4.pieces}</b></div>
-                {job.cross2.pieces > 0 && <div style={row}><span>Cross tee 2'{job.cross2.cuts ? <span style={{ opacity: 0.6 }}> · {job.cross2.cuts} border pieces</span> : null}</span><b>{job.cross2.pieces}</b></div>}
-                <div style={row}><span>Wall angle 12'</span><b>{job.wallAngle.pieces}</b></div>
-                <div style={row}><span>Hanger wire + anchor</span><b>{job.wires}</b></div>
+                <div style={head}>What to include</div>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", padding: "2px 0" }} title="Find every room with a ceiling grid drawn in it — no tracing needed. Runs again now.">
+                  <input type="checkbox" defaultChecked={prefs.auto !== false} onChange={(e) => { ceilSetAuto(e.target.checked); runCeilingGrid(); }} />
+                  Find grid rooms on the sheet automatically
+                </label>
+                {assemblies.map((c) => {
+                  const on = !g.rooms.some((r) => r.condId === c.id && r.excluded);
+                  return (
+                    <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", padding: "2px 0" }} title="Untick to leave this assembly out of the grid (gypsum ceilings, bulkheads, soffits…). Ceilings left out inside a grid room still cut a hole in it.">
+                      <input type="checkbox" checked={on} onChange={(e) => ceilToggleAssembly(c.id, e.target.checked)} />
+                      <span style={{ width: 10, height: 10, background: c.color || "#888", display: "inline-block" }} />
+                      {c.finish_tag}{ceilTileFor(c) ? "" : <span style={{ opacity: 0.55 }}> · no tile size</span>}
+                    </label>
+                  );
+                })}
+                <label style={{ display: "flex", alignItems: "center", gap: 6, margin: "4px 0 0", cursor: "pointer" }}>
+                  <input type="checkbox" checked={g.reuse} onChange={(e) => setCeilGrid((x) => x && { ...x, reuse: e.target.checked })} />
+                  Cut border pieces from offcuts (any room, same tile)
+                </label>
               </div>
-              {job.cutList.length > 0 && (
+              {job && (
                 <div style={{ borderTop: "1px solid var(--ink-faint)", paddingTop: 6, marginBottom: 6 }}>
-                  <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 2 }}>Border cuts</div>
+                  <div style={row}><span>Main tee 12'</span><b>{job.mains.pieces}</b></div>
+                  <div style={row}><span>Cross tee 4'{job.cross4.cuts ? <span style={{ opacity: 0.6 }}> · {job.cross4.cuts} border pieces{job.cross4.reusedCuts ? `, ${job.cross4.reusedCuts} paired on one tee` : ""}</span> : null}</span><b>{job.cross4.pieces}</b></div>
+                  {job.cross2.pieces > 0 && <div style={row}><span>Cross tee 2'{job.cross2.cuts ? <span style={{ opacity: 0.6 }}> · {job.cross2.cuts} border pieces</span> : null}</span><b>{job.cross2.pieces}</b></div>}
+                  <div style={row}><span>Wall angle 12'</span><b>{job.wallAngle.pieces}</b></div>
+                  <div style={row}><span>Hanger wire + anchor</span><b>{job.wires}</b></div>
+                </div>
+              )}
+              {job && job.cutList.length > 0 && (
+                <div style={{ borderTop: "1px solid var(--ink-faint)", paddingTop: 6, marginBottom: 6 }}>
+                  <div style={head}>Border cuts</div>
                   {job.cutList.map((c) => (
                     <div key={c.tile + c.size} style={row}>
                       <span>{c.size} <span style={{ opacity: 0.55 }}>({c.tile}) · room {c.rooms.map((k) => k + 1).join(", ")}</span></span>
@@ -11870,48 +12071,50 @@ export default function TakeoffCanvas() {
                 </div>
               )}
               <div style={{ borderTop: "1px solid var(--ink-faint)", paddingTop: 6 }}>
-                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 2 }}>Rooms</div>
-                {g.rooms.map((r, i) => {
-                  const q = job.rooms[i];
-                  if (!q) return null;
+                <div style={head}>Rooms</div>
+                {listed.map(({ r, i }, n) => {
+                  const j = ceilJobIndex.get(i);
+                  const q = j != null && job ? job.rooms[j] : null;
                   const sp = ceilSpec(r);
-                  const cen = q.centered.u && q.centered.v;
+                  const cen = q && q.centered.u && q.centered.v;
                   return (
                     <div key={r.id} onMouseEnter={() => setCeilGrid((x) => x && x.sel !== i ? { ...x, sel: i } : x)} onMouseLeave={() => setCeilGrid((x) => x && x.sel === i ? { ...x, sel: null } : x)}
-                      style={{ padding: "6px 0", borderTop: i ? "1px dashed var(--ink-faint)" : "none", background: g.sel === i ? "rgba(31,92,255,0.06)" : "transparent" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
-                        <b>{i + 1}. {r.label}</b>
-                        <span style={{ opacity: 0.7 }}>{sp.tileV === sp.tileU ? "2×2" : "2×4"} · {Math.round(q.areaSf)} SF</span>
+                      style={{ padding: "6px 0", borderTop: n ? "1px dashed var(--ink-faint)" : "none", background: g.sel === i ? "rgba(31,92,255,0.06)" : "transparent", opacity: q ? 1 : 0.75 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 6, alignItems: "center" }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontWeight: 700 }} title="Include this room in the grid and the material count">
+                          <input type="checkbox" checked={r.include} onChange={(e) => ceilRoomPatch(i, { include: e.target.checked })} />
+                          {q ? `${j + 1}. ` : ""}{r.label}
+                        </label>
+                        <span style={{ opacity: 0.7, whiteSpace: "nowrap" }}>{r.source === "found" ? <span style={{ color: "#7c3aed", fontWeight: 600 }}>found · </span> : r.tag ? `${r.tag} · ` : ""}{q ? `${Math.round(q.areaSf)} SF` : ""}</span>
                       </div>
-                      <div style={{ opacity: 0.8 }}>
+                      {q && <div style={{ opacity: 0.8 }}>
                         Borders {fmtFtIn(q.borders.uLow)} / {fmtFtIn(q.borders.uHigh)} along the {fmtFtIn(sp.tileU)} way, {fmtFtIn(q.borders.vLow)} / {fmtFtIn(q.borders.vHigh)} across ·{" "}
                         <span style={{ color: cen ? "#047857" : "#b45309", fontWeight: 600 }}>{cen ? "centred" : q.centered.u || q.centered.v ? "centred one way" : "off-centre"}</span>
-                      </div>
-                      <div style={{ opacity: 0.8 }}>{q.fullTiles} full tiles · {q.cutPieces.length} cut pieces</div>
-                      {q.slivers.map((t) => <div key={t} style={{ color: "#b91c1c" }}>⚠ {t}</div>)}
+                      </div>}
+                      {q && <div style={{ opacity: 0.8 }}>{q.fullTiles} full tiles · {q.cutPieces.length} cut pieces{r.holesPx.length ? ` · ${r.holesPx.length} bulkhead${r.holesPx.length === 1 ? "" : "s"}/soffit${r.holesPx.length === 1 ? "" : "s"} cut out` : ""}{r.how ? ` · grid read from the ${r.how === "lines" ? "drawing's lines" : "drawing's pixels"}` : ""}</div>}
+                      {q && q.slivers.map((t) => <div key={t} style={{ color: "#b91c1c" }}>⚠ {t}</div>)}
                       {r.note && <div style={{ color: "#b45309" }}>{r.note}</div>}
-                      {r.holes && <div style={{ opacity: 0.6 }}>Cut-outs inside this ceiling aren't subtracted from the grid.</div>}
-                      <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                      {r.include && <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
                         <select aria-label={`Layout for ${r.label}`} value={r.mode} onChange={(e) => ceilRoomPatch(i, { mode: e.target.value })} style={{ flex: 1, fontSize: 12 }}>
                           {CEIL_MODES.filter(([m]) => m !== "designed" || ceilMatches(r)).map(([m, t]) => <option key={m} value={m}>{t}</option>)}
                         </select>
                         <select aria-label={`Tile size for ${r.label}`} title={r.tileFrom === "assembly" ? "Tile size from the assembly" : r.tileFrom === "drawing" ? "Tile size read from the grid drawn on the plan" : "Tile size not known — pick one"} value={r.tile.tileU === 4 ? "2x4" : "2x2"}
-                          onChange={(e) => { const tile = e.target.value === "2x4" ? { tileU: 4, tileV: 2 } : { tileU: 2, tileV: 2 }; const nr = { ...r, tile, tileFrom: "you", note: "" }; const ok = ceilMatches(nr); ceilRoomPatch(i, { tile, tileFrom: "you", note: "", mode: ok ? "designed" : r.mode === "designed" ? "balanced" : r.mode, theta: ok ? r.detected.theta : r.theta }); }}
+                          onChange={(e) => { const tile = e.target.value === "2x4" ? { tileU: 4, tileV: 2 } : { tileU: 2, tileV: 2 }; const ok = ceilMatches({ ...r, tile }); ceilRoomPatch(i, { tile, tileFrom: "you", note: "", mode: ok ? "designed" : r.mode === "designed" ? "balanced" : r.mode, theta: ok ? r.detected.theta : r.theta }); }}
                           style={{ fontSize: 12, borderColor: r.tileFrom === "guess" ? "#b45309" : undefined }}>
                           <option value="2x2">2×2</option><option value="2x4">2×4</option>
                         </select>
-                        <button type="button" disabled={r.mode === "designed" && ceilMatches(r)} onClick={() => ceilRoomPatch(i, { theta: r.theta + Math.PI / 2 })} title="Turn the grid 90° in this room" style={{ fontSize: 12, padding: "2px 8px", cursor: r.mode === "designed" ? "default" : "pointer" }}>Turn 90°</button>
-                      </div>
+                        <button type="button" disabled={r.mode === "designed" && ceilMatches(r)} onClick={() => ceilRoomPatch(i, { theta: r.theta + Math.PI / 2 })} title="Turn the grid 90° in this room" style={{ fontSize: 12, padding: "2px 8px", cursor: "pointer" }}>Turn 90°</button>
+                      </div>}
                     </div>
                   );
                 })}
               </div>
               <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-                <button type="button" onClick={async () => { try { await navigator.clipboard.writeText(ceilMaterialText(g, job)); setCommitMsg("Ceiling grid material list copied."); } catch { setCommitMsg("Couldn't reach the clipboard from this page."); } }}
+                <button type="button" disabled={!job} onClick={async () => { try { await navigator.clipboard.writeText(ceilMaterialText(g, job)); setCommitMsg("Ceiling grid material list copied."); } catch { setCommitMsg("Couldn't reach the clipboard from this page."); } }}
                   style={{ flex: 1, padding: "6px 10px", border: "1px solid var(--cobalt)", background: "var(--cobalt)", color: "var(--paper-bright)", fontWeight: 600, cursor: "pointer" }}>Copy material list</button>
-                <button type="button" onClick={runCeilingGrid} title="Lay the rooms out again from the drawing" style={{ padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer" }}>Reset</button>
+                <button type="button" onClick={runCeilingGrid} title="Read the sheet again" style={{ padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer" }}>Re-run</button>
               </div>
-              <div style={{ opacity: 0.55, fontSize: 11, marginTop: 6 }}>Amber strips are border tiles; red ones are slivers under half a tile. Mains are the heavy lines.</div>
+              <div style={{ opacity: 0.55, fontSize: 11, marginTop: 6 }}>Purple numbers are rooms the tool found; dashed outlines are spaces not ticked. Amber strips are border tiles, red ones slivers under half a tile, grey patches bulkheads/soffits left out. Mains are the heavy lines.</div>
             </div>
           );
         })()}
