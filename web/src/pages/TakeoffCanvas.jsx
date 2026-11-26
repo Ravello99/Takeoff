@@ -258,6 +258,7 @@ const NOTE_EXCLUDE = new Set(["exclude", "demo"]);
 import { findScheduleOnPage } from "../lib/scheduleFinder";
 import { api as vanguardApi, onTransfer } from "../lib/vanguardApi.js";
 import ScheduleReader from "../components/vanguard/ScheduleReader.jsx";
+import DrawingProgress from "../components/vanguard/DrawingProgress.jsx";
 
 // Carpet roll width — a run reaching this needs a seam. The live cursor readout
 // turns amber at/past it so the estimator sees where seams fall while tracing.
@@ -408,6 +409,7 @@ export default function TakeoffCanvas() {
   const [lastGroup, setLastGroup] = useState([]);     // most recent side-by-side composition — "Regroup" restores it
   // plan-file uploads/downloads in flight (vanguardApi transfer events) → the progress card
   const [transfers, setTransfers] = useState({});
+  const [importing, setImporting] = useState(null);   // adding drawings: { phase: "reading"|"uploading"|"opening", names, at, of, msg } — shown before/around the byte transfer
   useEffect(() => onTransfer((ev) => setTransfers((t) => {
     if (ev.done) { const { [ev.id]: _gone, ...rest } = t; return rest; }
     return { ...t, [ev.id]: { ...(t[ev.id] || {}), ...ev } };
@@ -1887,8 +1889,10 @@ export default function TakeoffCanvas() {
     const prof = incoming.find((f) => isProfileFile(f.name));
     if (prof) { await importProfileFile(prof); return; }
     setCommitMsg("Reading files…");
+    setImporting({ phase: "reading", names: incoming.map((f) => f.name), msg: "Reading files…" });
+    try {
     let pdfs = [], skipped = [];
-    try { ({ pdfs, skipped } = await ingestFiles(incoming, { onProgress: setCommitMsg })); }
+    try { ({ pdfs, skipped } = await ingestFiles(incoming, { onProgress: (m) => { setCommitMsg(m); setImporting((st) => st && { ...st, msg: m }); } })); }
     catch (e) { setCommitMsg(`Couldn't read those files: ${e.message || e}`); return; }
     if (!pdfs.length) {
       setCommitMsg(skipped.length
@@ -1897,7 +1901,12 @@ export default function TakeoffCanvas() {
       return;
     }
     const results = [];
-    for (const f of pdfs) { try { results.push(await store.addPdf(f)); } catch (e) { setCommitMsg(`Couldn't open ${f.name}: ${e.message || e}`); } }
+    for (let i = 0; i < pdfs.length; i++) {
+      const f = pdfs[i];
+      setImporting({ phase: "uploading", names: [f.name], at: i + 1, of: pdfs.length, msg: "Preparing…" });
+      try { results.push(await store.addPdf(f)); } catch (e) { setCommitMsg(`Couldn't open ${f.name}: ${e.message || e}`); }
+    }
+    setImporting({ phase: "opening", names: pdfs.map((f) => f.name), msg: "Counting sheets and building previews…" });
     // A re-added name's search entry, OCR reads and thumbnail records (whose
     // text-layer flag seeds the index) start over unless its bytes are known
     // to be the same (readdEffects); a cached read goes back into the
@@ -1946,6 +1955,7 @@ export default function TakeoffCanvas() {
     } else {
       setCommitMsg(`Opened ${names.length} sheet${names.length === 1 ? "" : "s"}${tail}.`);
     }
+    } finally { setImporting(null); }
   }
   // The empty-project landing view (the Drive picker for an empty cloud project,
   // else the gallery) depends on BOTH the sheet list and the annotations (open
@@ -11483,26 +11493,12 @@ export default function TakeoffCanvas() {
             </svg>
           </div>
 
-          {Object.keys(transfers).length > 0 && (() => {
-            const list = Object.values(transfers);
-            const loaded = list.reduce((n, t) => n + (t.loaded || 0), 0), total = list.reduce((n, t) => n + (t.total || 0), 0);
-            const pct = total ? Math.min(100, Math.round((loaded / total) * 100)) : null;
-            const up = list.some((t) => t.dir === "up");
-            const mb = (b) => (b / 1048576).toFixed(b < 10485760 ? 1 : 0);
-            return (
-              <div className="vg-progress" role="status" aria-live="polite">
-                <div className="vg-progress-title">{up ? "Uploading drawings" : "Loading drawings"}{list.length > 1 ? ` · ${list.length} files` : ""}</div>
-                <div className="vg-progress-name">{list.map((t) => t.name).filter(Boolean).join(", ")}</div>
-                <div className="vg-progress-bar"><span style={{ width: pct == null ? "35%" : `${pct}%` }} className={pct == null ? "is-indeterminate" : ""} /></div>
-                <div className="vg-progress-meta">{pct == null ? "Working…" : `${pct}% · ${mb(loaded)} of ${mb(total)} MB`}{up && pct === 100 ? " · saving on the server…" : ""}</div>
-              </div>
-            );
-          })()}
+          {!(view === "gallery" || view === "picker") && <DrawingProgress importing={importing} transfers={transfers} />}
           {status !== "ready" && (
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink-muted)", fontSize: 15 }}>
               {status === "loading" && "Loading sheets…"}
               {status === "rendering" && "Rendering sheet…"}
-              {status === "empty" && !Object.keys(transfers).length && (
+              {status === "empty" && !Object.keys(transfers).length && !importing && (
                 <div className="vg-empty" onPointerDown={(e) => e.stopPropagation()}>
                   <img className="vg-empty-logo" src="/brand/logo.png" alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} />
                   <h2>Add this project's drawings</h2>
@@ -12177,7 +12173,7 @@ export default function TakeoffCanvas() {
           cloudMode={cloudMode}
           sheets={sheets} withDoc={docCache.withDoc} withLoadedDoc={docCache.withLoadedDoc} scales={scales} detectedScales={detectedScales} scaleUnconfirmed={scaleUnconfirmed}
           shapes={shapes} labels={(() => { const m = { ...galleryLabels }; for (const [k, si] of Object.entries(sheetInfo)) { const n = sheetDisplayName(si); if (n) m[k] = n; } return m; })()}
-          sheetInfo={sheetInfo} prepStatus={prepStatus} onPrepare={aiEnabled ? () => prepareProject({ force: true }) : undefined}
+          sheetInfo={sheetInfo} prepStatus={prepStatus} addingCard={<DrawingProgress importing={importing} transfers={transfers} fixed />} onPrepare={aiEnabled ? () => prepareProject({ force: true }) : undefined}
           onLabel={(k, lbl) => setGalleryLabels((m) => (m[k] === lbl ? m : { ...m, [k]: lbl }))}
           onDetect={(k, det) => setDetectedScales((d) => (d[k]?.label === det.label ? d : { ...d, [k]: det }))}
           thumbCacheRef={thumbCacheRef} busyRef={statusRef}

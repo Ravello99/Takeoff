@@ -70,6 +70,8 @@ export default function PlanNavigator({
   sheets, withDoc, withLoadedDoc, scales, detectedScales, scaleUnconfirmed = {}, shapes, labels, onLabel, onDetect,
   // AI sheet index (Vanguard): kind + "matters for partitions" per sheet, the prep status, and a re-run
   sheetInfo = {}, prepStatus = null, onPrepare,
+  // the canvas's "adding drawings" card (reading / uploading / opening), shown over this screen
+  addingCard = null,
   thumbCacheRef, busyRef, openTabs, onOpen,
   // plan-set search (#471): the canvas-owned index map, a subscription to its
   // changes (at most one call a frame), the setter that stores one sheet's
@@ -1429,6 +1431,7 @@ export default function PlanNavigator({
       {confirmDialog}
       {bulkDialog}
       {clearDialog}
+      {addingCard}
     </div>
   );
 
