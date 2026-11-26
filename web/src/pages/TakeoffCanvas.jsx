@@ -5376,12 +5376,13 @@ export default function TakeoffCanvas() {
         const holesPx = [...d.holesPx, ...drawn.filter((o) => nested(o, d)).map((o) => o.px)];
         rooms.push(await makeRoom({ source: "takeoff", id: d.s.id, label: ceilRoomName(spans, d.px) || d.c.finish_tag || "Ceiling", condId: d.c.id, tag: d.c.finish_tag || "", said: ceilTileFor(d.c), polyPx: d.px, holesPx, excluded: exclude.has(d.c.id) }));
       }
-      let found = 0, unread = 0;
+      let found = 0, unread = 0, cut = false;
       if (auto && segs && segs.length) {
         setCeilBusy("Finding the grid ceilings on this sheet…");
         const dims = panelImgs[key] || tp.img;
         const res = await findGridRooms({ segs, w: dims.w, h: dims.h, pxPerFt: 1 / upp, skip: drawn.map((d) => d.px),
           onProgress: (a, b) => setCeilBusy(`Finding the grid ceilings on this sheet… ${Math.round((100 * a) / Math.max(1, b))}%`) });
+        cut = !!res.truncated;
         const drawnRings = drawn.map((d) => d.px);
         // most of it already drawn as a takeoff → not a new room
         const overlap = (ring) => {
@@ -5412,7 +5413,7 @@ export default function TakeoffCanvas() {
       }
       setCeilGrid({ key, sheet: labelFor(tp), upp, rooms, reuse: true, sel: null });
       const drawnAsIs = rooms.filter((r) => r.mode === "designed" && r.include).length;
-      setCommitMsg(`Ceiling grid: ${rooms.filter((r) => r.include && !r.excluded).length} room${rooms.length === 1 ? "" : "s"} laid out${found ? ` (${found - unread} found on the sheet${unread ? `, ${unread} more with grid lines to check` : ""})` : ""}${drawnAsIs ? ` — ${drawnAsIs} as drawn on the RCP` : ""}.`);
+      setCommitMsg(`Ceiling grid: ${rooms.filter((r) => r.include && !r.excluded).length} room${rooms.length === 1 ? "" : "s"} laid out${found ? ` (${found - unread} found on the sheet${unread ? `, ${unread} more with grid lines to check` : ""})` : ""}${drawnAsIs ? ` — ${drawnAsIs} as drawn on the RCP` : ""}.${cut ? " The search ran out of time before covering the whole sheet — add the found rooms to the takeoff and Re-run to search the rest." : ""}`);
     } finally {
       setCeilBusy("");
     }

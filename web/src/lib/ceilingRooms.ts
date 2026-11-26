@@ -17,6 +17,8 @@ export interface FindOpts {
   onProgress?: (done: number, total: number) => void;   // seeds tried / seeds; the run yields to the page between slices
 }
 
+const MASK_PPF = 6;
+
 const inPoly = (poly: Pt[], x: number, y: number) => {
   let ins = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -26,10 +28,10 @@ const inPoly = (poly: Pt[], x: number, y: number) => {
   return ins;
 };
 
-export async function findGridRooms(o: FindOpts): Promise<{ rooms: FoundRoom[]; grid: Uint8Array; floods: number; stats?: Record<string, number> }> {
+export async function findGridRooms(o: FindOpts): Promise<{ rooms: FoundRoom[]; grid: Uint8Array; floods: number; stats?: Record<string, number>; truncated?: boolean }> {
   const { segs, w, h, pxPerFt } = o;
   const minSf = o.minSf ?? 12, maxSf = o.maxSf ?? 30000, holeSf = o.holeSf ?? 10;
-  const maxFloods = o.maxFloods ?? 2000, t0 = Date.now(), maxMs = o.maxMs ?? 20000;
+  const maxFloods = o.maxFloods ?? 3000, t0 = Date.now(), maxMs = o.maxMs ?? 45000;
   const grid = classifyGridSegs(segs, pxPerFt);
   const n = segs.length >> 2;
   const keep: number[] = [];
@@ -41,7 +43,10 @@ export async function findGridRooms(o: FindOpts): Promise<{ rooms: FoundRoom[]; 
     if (o.meta) meta.push(o.meta[i]);
   }
   if (mids.length < 12) return { rooms: [], grid, floods: 0 };
-  const mo = buildMask(keep, w, h, MASK_MAX_DIM, o.meta ? Uint8Array.from(meta) : null, pxPerFt);
+  // a fixed working resolution, ~6 mask px per foot, whatever the drawing's scale:
+  // a 1/4" sheet at the usual cap would make every fill ~9× the work of a 1/8" one
+  const maxDim = Math.min(MASK_MAX_DIM, Math.ceil((Math.max(w, h) * MASK_PPF) / pxPerFt));
+  const mo = buildMask(keep, w, h, maxDim, o.meta ? Uint8Array.from(meta) : null, pxPerFt);
   const { mw, mh, ws } = mo;
   const mppf = ws * pxPerFt;                  // mask px per foot
   const taken = new Uint8Array(mw * mh);      // cells already inside a found room
@@ -65,14 +70,24 @@ export async function findGridRooms(o: FindOpts): Promise<{ rooms: FoundRoom[]; 
       }
     }
   }
+  // coarse first: one seed per 8' cell before any second seed, so a time-out never
+  // leaves a whole part of the sheet untried
+  {
+    const big = 8 * pxPerFt, first: number[] = [], rest: number[] = [], got = new Set<number>();
+    for (let s = 0; s + 1 < seeds.length; s += 2) {
+      const k = Math.round(seeds[s] / big) * 100003 + Math.round(seeds[s + 1] / big);
+      (got.has(k) ? rest : first).push(seeds[s], seeds[s + 1]); got.add(k);
+    }
+    seeds.length = 0; seeds.push(...first, ...rest);
+  }
   const skip = o.skip || [];
   let floods = 0;
   const stats: Record<string, number> = {};
   const clear = Math.max(1, Math.round(0.35 * mppf));
   const seal = sealRadiiFor(mppf), wedge = doorWedgeCapPx(mppf), pass = minPassRadiusFor(mppf);
-  let slice = Date.now();
+  let slice = Date.now(), truncated = false;
   for (let s = 0; s + 1 < seeds.length; s += 2) {
-    if (floods >= maxFloods || Date.now() - t0 > maxMs) break;
+    if (floods >= maxFloods || Date.now() - t0 > maxMs) { truncated = true; break; }
     if (Date.now() - slice > 120) { o.onProgress?.(s >> 1, seeds.length >> 1); await new Promise((r) => setTimeout(r, 0)); slice = Date.now(); }
     const x = seeds[s], y = seeds[s + 1];
     const mx = Math.floor(x * ws), my = Math.floor(y * ws);
@@ -114,7 +129,7 @@ export async function findGridRooms(o: FindOpts): Promise<{ rooms: FoundRoom[]; 
     fillRing(taken, mw, mh, ring.map(([a, b]) => [a * ws, b * ws] as Pt));
     rooms.push({ ring, holes: islands(reg, mw, mh, ws, mppf, holeSf, taken), areaSf: +areaSf.toFixed(1), gridSegs: gs });
   }
-  return { rooms, grid, floods, stats };
+  return { rooms, grid, floods, stats, truncated };
 }
 
 // a grid line sits ON the mask's free cells' edge after lifting: count it if a neighbour is in the room
