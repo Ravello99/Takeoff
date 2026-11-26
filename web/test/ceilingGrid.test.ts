@@ -109,6 +109,8 @@ test("canvas helpers: room angle, tile size from words, the better turn, frame r
   assert.deepEqual(tileSizeFromText("24\" x 24\" lay-in"), { tileU: 2, tileV: 2 });
   assert.deepEqual(tileSizeFromText("600 x 1200 mineral fibre"), { tileU: 4, tileV: 2 });
   assert.equal(tileSizeFromText("GWB ceiling on drywall grid"), null);
+  assert.deepEqual(tileSizeFromText("ACT 2'-0\" x 2'-0\""), { tileU: 2, tileV: 2 });
+  assert.deepEqual(tileSizeFromText("2 by 4 lay-in"), { tileU: 4, tileV: 2 });
   // 10' × 14' with 2×4: running the 4' side along the 10' side gives 2'-6" borders… along 14' gives 3' — the tool picks the cheaper
   const th = bestTurn(rect(10, 14), { tileU: 4, tileV: 2, theta: 0 });
   const g = layoutRoom(rect(10, 14), { tileU: 4, tileV: 2, theta: th });

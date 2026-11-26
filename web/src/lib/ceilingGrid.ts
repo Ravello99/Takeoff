@@ -452,7 +452,7 @@ export function roomAngle(poly: Pt[]): number {
 
 /** Tile size from an assembly's words: "2×4", "24x48", "600 x 1200" → { tileU: 4, tileV: 2 }. */
 export function tileSizeFromText(text: string): { tileU: number; tileV: number } | null {
-  const t = String(text || "").replace(/["'”″]/g, "").toLowerCase();
+  const t = String(text || "").replace(/["'”″’]/g, "").replace(/(\d)\s*-\s*0\b/g, "$1").replace(/\s*by\s*/gi, " x ").toLowerCase();
   if (/\b(2\s*[x×]\s*4|4\s*[x×]\s*2|24\s*[x×]\s*48|48\s*[x×]\s*24|600\s*[x×]\s*1200|1200\s*[x×]\s*600)\b/.test(t)) return { tileU: 4, tileV: 2 };
   if (/\b(2\s*[x×]\s*2|24\s*[x×]\s*24|600\s*[x×]\s*600)\b/.test(t)) return { tileU: 2, tileV: 2 };
   return null;

@@ -5268,40 +5268,50 @@ export default function TakeoffCanvas() {
     const upp = uppFor(tp.key);
     if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first — the ceiling grid is laid out in real feet.`); return; }
     const byId = Object.fromEntries(conditions.map((c) => [c.id, c]));
-    const areas = shapes.filter((s) => s.sheet_id === tp.key && s.measure_role === "floor_area" && byId[s.condition_id]?.category === "Ceilings");
-    const tiled = areas.filter((s) => ceilTileFor(byId[s.condition_id]));
-    if (!tiled.length) {
-      setCommitMsg(areas.length
-        ? "None of this sheet's ceilings use a 2×2 or 2×4 lay-in assembly — say the tile size in the assembly (e.g. \"ACT 2×4\")."
-        : `Draw the ceilings on ${labelFor(tp)} first (Area, or One-Click on the reflected ceiling plan) with a 2×2 or 2×4 ceiling assembly, then run Ceiling grid.`);
+    const isCeiling = (c) => c && (/ceil/i.test(c.category || "") || /\b(act|acoustic|lay-?in|ceiling tile)\b/i.test(`${c.finish_tag || ""} ${c.name || ""} ${c.spec?.description || ""}`));
+    const areas = shapes.filter((s) => s.sheet_id === tp.key && s.measure_role === "floor_area" && isCeiling(byId[s.condition_id]));
+    if (!areas.length) {
+      setCommitMsg(`Draw the ceilings on ${labelFor(tp)} first (Area, or One-Click on the reflected ceiling plan) with a ceiling assembly, then run Ceiling grid.`);
       return;
     }
     const segs = vectorSegsRef.current.get(tp.key);
     const segsFt = segs && segs.length ? Array.from(segs, (v) => v * upp) : [];
-    const rooms = tiled.map((s, i) => {
+    // tile size: the assembly says it, else the grid drawn in the room shows it, else 2×2 until you pick
+    const std = (det) => {
+      const near = (x, y) => Math.abs(x - y) < 0.12;
+      if (near(det.tileU, 2) && near(det.tileV, 2)) return { tileU: 2, tileV: 2 };
+      if (near(det.tileU, 4) && near(det.tileV, 2)) return { tileU: 4, tileV: 2 };
+      return null;
+    };
+    const rooms = areas.map((s, i) => {
       const c = byId[s.condition_id];
-      const tile = ceilTileFor(c);
       const polyPx = s.verts_norm.map(([x, y]) => [x * tp.img.w, y * tp.img.h]);
       const polyFt = polyPx.map(([x, y]) => [x * upp, y * upp]);
       let det = null;
       try { det = segsFt.length ? detectGrid(segsFt, polyFt) : null; } catch { det = null; }
+      const said = ceilTileFor(c), seen = det && std(det);
+      const tile = said || seen || { tileU: 2, tileV: 2 };
+      const tileFrom = said ? "assembly" : seen ? "drawing" : "guess";
       const label = s.label || `${c.finish_tag || "Ceiling"} · room ${i + 1}`;
-      const base = { id: s.id, label, tag: c.finish_tag || "", condId: c.id, tile, polyFt, polyPx, holes: !!s.verts_norm_holes?.length };
+      const base = { id: s.id, label, tag: c.finish_tag || "", condId: c.id, tile, tileFrom, polyFt, polyPx, holes: !!s.verts_norm_holes?.length, detected: det };
       const sameModule = det && Math.abs(det.tileU - tile.tileU) < 0.12 && Math.abs(det.tileV - tile.tileV) < 0.12;
-      if (sameModule) return { ...base, theta: det.theta, mode: "designed", detected: det, note: "" };
+      if (sameModule) return { ...base, theta: det.theta, mode: "designed", note: "" };
       const theta0 = det ? det.theta : roomAngle(polyFt);
       const theta = bestTurn(polyFt, { tileU: tile.tileU, tileV: tile.tileV, theta: theta0, mode: "balanced" });
-      const note = det ? `The RCP's grid here reads ${fmtFtIn(det.tileV)} × ${fmtFtIn(det.tileU)}, but ${c.finish_tag || "the assembly"} is ${tile.tileV}×${tile.tileU} — laid out centred instead.` : "";
-      return { ...base, theta, mode: "balanced", detected: det && sameModule ? det : null, note };
+      const note = tileFrom === "guess" ? "No tile size in the assembly and no grid drawn here — set it to 2×2 or 2×4 below."
+        : det ? `The RCP's grid here reads ${fmtFtIn(det.tileV)} × ${fmtFtIn(det.tileU)}, but ${c.finish_tag || "the assembly"} is ${tile.tileV}×${tile.tileU} — laid out centred instead.` : "";
+      return { ...base, theta, mode: "balanced", note };
     });
     setWallFind(null);
     setCeilGrid({ key: tp.key, sheet: labelFor(tp), upp, rooms, reuse: true, sel: null });
     const drawn = rooms.filter((r) => r.mode === "designed").length;
-    const skipped = areas.length - tiled.length;
-    setCommitMsg(`Ceiling grid: ${rooms.length} room${rooms.length === 1 ? "" : "s"} laid out${drawn ? ` — ${drawn} read from the grid drawn on the RCP` : ""}${skipped ? `; ${skipped} ceiling${skipped === 1 ? "" : "s"} without a tile size skipped` : ""}. Change a room's layout in the panel to see the cuts change.`);
+    const fromDrawing = rooms.filter((r) => r.tileFrom === "drawing").length;
+    const guessed = rooms.filter((r) => r.tileFrom === "guess").length;
+    setCommitMsg(`Ceiling grid: ${rooms.length} room${rooms.length === 1 ? "" : "s"} laid out${drawn ? ` — ${drawn} read from the grid drawn on the RCP` : ""}${fromDrawing ? `; tile size taken from the drawing in ${fromDrawing}` : ""}${guessed ? `; ${guessed} need a tile size (set 2×2 / 2×4 in the panel)` : ""}.`);
   }
   // a room's layout spec (as-drawn uses the drawing's own module, direction and line positions)
-  const ceilSpec = (r) => (r.mode === "designed" && r.detected
+  const ceilMatches = (r) => !!r.detected && Math.abs(r.detected.tileU - r.tile.tileU) < 0.12 && Math.abs(r.detected.tileV - r.tile.tileV) < 0.12;
+  const ceilSpec = (r) => (r.mode === "designed" && ceilMatches(r)
     ? { tileU: r.detected.tileU, tileV: r.detected.tileV, theta: r.detected.theta, mode: "designed", phaseU: r.detected.phaseU, phaseV: r.detected.phaseV }
     : { tileU: r.tile.tileU, tileV: r.tile.tileV, theta: r.theta, mode: r.mode === "designed" ? "balanced" : r.mode });
   const ceilJob = useMemo(() => {
@@ -11883,9 +11893,14 @@ export default function TakeoffCanvas() {
                       {r.holes && <div style={{ opacity: 0.6 }}>Cut-outs inside this ceiling aren't subtracted from the grid.</div>}
                       <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
                         <select aria-label={`Layout for ${r.label}`} value={r.mode} onChange={(e) => ceilRoomPatch(i, { mode: e.target.value })} style={{ flex: 1, fontSize: 12 }}>
-                          {CEIL_MODES.filter(([m]) => m !== "designed" || r.detected).map(([m, t]) => <option key={m} value={m}>{t}</option>)}
+                          {CEIL_MODES.filter(([m]) => m !== "designed" || ceilMatches(r)).map(([m, t]) => <option key={m} value={m}>{t}</option>)}
                         </select>
-                        <button type="button" disabled={r.mode === "designed"} onClick={() => ceilRoomPatch(i, { theta: r.theta + Math.PI / 2 })} title="Turn the grid 90° in this room" style={{ fontSize: 12, padding: "2px 8px", cursor: r.mode === "designed" ? "default" : "pointer" }}>Turn 90°</button>
+                        <select aria-label={`Tile size for ${r.label}`} title={r.tileFrom === "assembly" ? "Tile size from the assembly" : r.tileFrom === "drawing" ? "Tile size read from the grid drawn on the plan" : "Tile size not known — pick one"} value={r.tile.tileU === 4 ? "2x4" : "2x2"}
+                          onChange={(e) => { const tile = e.target.value === "2x4" ? { tileU: 4, tileV: 2 } : { tileU: 2, tileV: 2 }; const nr = { ...r, tile, tileFrom: "you", note: "" }; const ok = ceilMatches(nr); ceilRoomPatch(i, { tile, tileFrom: "you", note: "", mode: ok ? "designed" : r.mode === "designed" ? "balanced" : r.mode, theta: ok ? r.detected.theta : r.theta }); }}
+                          style={{ fontSize: 12, borderColor: r.tileFrom === "guess" ? "#b45309" : undefined }}>
+                          <option value="2x2">2×2</option><option value="2x4">2×4</option>
+                        </select>
+                        <button type="button" disabled={r.mode === "designed" && ceilMatches(r)} onClick={() => ceilRoomPatch(i, { theta: r.theta + Math.PI / 2 })} title="Turn the grid 90° in this room" style={{ fontSize: 12, padding: "2px 8px", cursor: r.mode === "designed" ? "default" : "pointer" }}>Turn 90°</button>
                       </div>
                     </div>
                   );
