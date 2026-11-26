@@ -379,6 +379,10 @@ class ServerTest(unittest.TestCase):
             sent = seen["body"]["messages"][0]["content"]
             self.assertEqual(sent[0]["image_url"]["url"], img)
             self.assertIn("existing walls screened", sent[1]["text"])
+            # sheet index: unknown keys dropped, flags normalised
+            seen["reply"] = '[{"key": "a.pdf", "number": "A2.0", "title": "Proposed Floor Plan", "kind": "floor_plan", "interior_partitions": true}, {"key": "a.pdf#2", "number": "E1.0", "title": "Lighting Plan", "kind": "electrical"}, {"key": "nope", "title": "x"}]'
+            s, out, _ = admin.req("POST", "/api/ai/index-sheets", {"sheets": [{"key": "a.pdf", "text": "PROPOSED FLOOR PLAN A2.0"}, {"key": "a.pdf#2", "text": "LIGHTING PLAN E1.0"}]})
+            self.assertEqual([(x["key"], x["kind"], x["interior_partitions"]) for x in out["sheets"]], [("a.pdf", "floor_plan", True), ("a.pdf#2", "electrical", False)])
             # wrong image type refused
             self.assertEqual(admin.req("POST", "/api/ai/read-schedule", {"image": "data:text/plain;base64,aGk="})[0], 400)
         finally:

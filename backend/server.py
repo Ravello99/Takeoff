@@ -120,6 +120,20 @@ Judge only the highlighted run in each tile:
 - "confidence": 0 to 1.
 - "why": a few words.
 Answer ONLY with a JSON array, one object per tile, e.g. [{"n": 1, "wall": true, "status": "new", "tag": "", "confidence": 0.8, "why": "double line partition"}]."""
+INDEX_SHEETS_PROMPT = """You are indexing a construction drawing set for a commercial DRYWALL / interior systems contractor
+(steel stud partitions, drywall, ceilings, exterior sheathing and framing). For each sheet below you get its
+title-block and largest text. Answer ONLY with a JSON array, one object per sheet, in the same order:
+[{"key": "the sheet key as given",
+  "number": "sheet number, e.g. 'A2.0'" or "",
+  "title": "the sheet's title in Title Case, e.g. 'Proposed Floor Plan'",
+  "kind": "cover" | "site" | "demolition_plan" | "floor_plan" | "reflected_ceiling_plan" | "wall_types" | "door_schedule" |
+          "finish_plan" | "elevations" | "sections" | "details" | "roof_plan" | "structural" | "mechanical" | "electrical" |
+          "plumbing" | "fire_protection" | "specifications" | "other",
+  "interior_partitions": true if the sheet shows or defines interior partitions/walls the contractor builds (floor plans, partition/wall type schedules, partition details, interior elevations, demolition plans showing walls to remain),
+  "exterior": true if it shows exterior wall framing/sheathing/envelope (building sections, wall sections, envelope details),
+  "ceilings": true if it shows ceilings or bulkheads (reflected ceiling plans, ceiling details),
+  "why": "a few words"}]
+Mechanical, electrical, plumbing, structural, site and civil sheets are not the contractor's unless they clearly show partitions."""
 EMAIL_KEYS = ("smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from", "public_url")
 INVITE_DAYS = 7
 MAX_JSON = 64 * 1024 * 1024        # takeoff payload / library JSON
@@ -908,6 +922,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"ok": True, "models": [m_["id"] for m_ in models]})
         if p == ["ai", "read-schedule"] and m == "POST":
             return self.ai_read_schedule(c, me)
+        if p == ["ai", "index-sheets"] and m == "POST":
+            return self.ai_index_sheets(c, me)
         if p == ["ai", "review-runs"] and m == "POST":
             return self.ai_review_runs(c, me)
         if p == ["ai", "map-tags"] and m == "POST":
@@ -1141,6 +1157,44 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": [], "raw": text[:2000],
                                         "error": "The AI answered, but not with a list of wall types. Try a tighter crop of just the schedule."})
         return self.send_json(200, {"log_id": cur.lastrowid, "model": model, "ms": ms, "walls": walls})
+
+    def ai_index_sheets(self, c, me):
+        """A batch of sheets (title-block text) → number, title, kind and whether
+        each matters for partitions, exterior or ceilings."""
+        cfg = get_settings(c)
+        if not ai_ready(cfg):
+            raise ApiError(400, "AI isn't connected yet.")
+        body = self.read_json()
+        sheets = [x for x in (body.get("sheets") or []) if isinstance(x, dict) and x.get("key")][:25]
+        if not sheets:
+            return self.send_json(200, {"sheets": []})
+        lines = []
+        for x in sheets:
+            lines.append(f'--- key: {str(x["key"])[:200]}' + (f' (number guess: {str(x.get("number") or "")[:20]})' if x.get("number") else ""))
+            lines.append(str(x.get("text") or "")[:900])
+        model = ai_model(cfg)
+        t0 = time.time()
+        out = ai_request(cfg, "/chat/completions", {
+            "model": model, "temperature": 0, "max_tokens": min(6000, 160 * len(sheets) + 200),
+            "chat_template_kwargs": {"enable_thinking": False},
+            "messages": [{"role": "user", "content": INDEX_SHEETS_PROMPT + "\n\nSHEETS:\n" + "\n".join(lines)}],
+        })
+        ms = int((time.time() - t0) * 1000)
+        reply = ((out.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        if isinstance(reply, list):
+            reply = "".join(part.get("text", "") for part in reply if isinstance(part, dict))
+        reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.S)
+        keys = {str(x["key"]) for x in sheets}
+        clean = []
+        for v in extract_json_array(reply) or []:
+            if not isinstance(v, dict) or str(v.get("key")) not in keys:
+                continue
+            clean.append({"key": str(v["key"]), "number": str(v.get("number") or "")[:20].strip(), "title": str(v.get("title") or "")[:80].strip(),
+                          "kind": str(v.get("kind") or "other")[:30], "interior_partitions": v.get("interior_partitions") is True,
+                          "exterior": v.get("exterior") is True, "ceilings": v.get("ceilings") is True, "why": str(v.get("why") or "")[:80]})
+        c.execute("INSERT INTO ai_log (kind, user_id, image_hash, model, raw, result, ms, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                  ("index_sheets", me["id"], None, model, reply, json.dumps(clean), ms, time.time()))
+        return self.send_json(200, {"sheets": clean, "ms": ms})
 
     def ai_review_runs(self, c, me):
         """A grid of numbered plan tiles, each with one highlighted candidate run →

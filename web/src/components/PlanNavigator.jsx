@@ -18,6 +18,7 @@
 // shortcuts in EVERY mode via a capture-phase listener — shortcut suppression is
 // keyed on "is this mounted", never on the canvas' view/mode staying in sync.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isOurSheet, KIND_LABELS } from "../lib/sheetIndex";
 import { Link, useNavigate } from "react-router";
 import { Icon } from "../brand/icons.jsx";
 import SheetPreview from "./SheetPreview.jsx";
@@ -67,6 +68,8 @@ export default function PlanNavigator({
   canClose, onExit, onPremium, onStartTour, onConnect, initialMode = "plan", cloudMode,
   // plan-set (gallery) data
   sheets, withDoc, withLoadedDoc, scales, detectedScales, scaleUnconfirmed = {}, shapes, labels, onLabel, onDetect,
+  // AI sheet index (Vanguard): kind + "matters for partitions" per sheet, the prep status, and a re-run
+  sheetInfo = {}, prepStatus = null, onPrepare,
   thumbCacheRef, busyRef, openTabs, onOpen,
   // plan-set search (#471): the canvas-owned index map, a subscription to its
   // changes (at most one call a frame), the setter that stores one sheet's
@@ -721,7 +724,12 @@ export default function PlanNavigator({
   // read in drawing order. The Unassigned group keeps stable file/page order
   // regardless of whether other groups have levels — see sortGalleryGroups's
   // comment for why this must be a PER-GROUP gate, not a whole-gallery one.
-  const groups = sortGalleryGroups(groupSheetsByLevel(allKeys, levels), labelOf);
+  // "Our sheets": only the sheets the AI index says matter for partitions / exterior
+  const oursCount = allKeys.filter((k) => isOurSheet(sheetInfo[k])).length;
+  const [onlyOurs, setOnlyOurs] = useState(null);   // null = follow the default (on once the index found our sheets)
+  const ours = (onlyOurs ?? oursCount > 0) && oursCount > 0;
+  const listedKeys = ours ? allKeys.filter((k) => isOurSheet(sheetInfo[k])) : allKeys;
+  const groups = sortGalleryGroups(groupSheetsByLevel(listedKeys, levels), labelOf);
   // a search shows its hits as one ungrouped run, in searchPlan's rank order —
   // never through the level grouping/sort above, which would reorder them
   const shownGroups = search ? (search.hits.length ? [{ level: null, keys: search.hits.map((h) => h.key) }] : []) : groups;
@@ -792,6 +800,21 @@ export default function PlanNavigator({
       </button>
       <Icon name="sheets" size={18} />
       <strong style={{ fontFamily: "var(--f-display)", fontSize: 16, color: "var(--ink)" }}>{title}</strong>
+      {mode === "plan" && oursCount > 0 && (
+        <span style={{ display: "inline-flex", border: "1px solid var(--ink-faint)" }} role="group" aria-label="Which sheets to show">
+          <button type="button" onClick={() => setOnlyOurs(true)} aria-pressed={ours} title="Floor plans, wall types, sections and details that matter for interior and exterior partitions (sorted by the AI)"
+            style={{ padding: "4px 10px", border: "none", cursor: "pointer", fontSize: 12, background: ours ? "var(--ink)" : "transparent", color: ours ? "var(--paper-bright)" : "var(--ink)" }}>Our sheets ({oursCount})</button>
+          <button type="button" onClick={() => setOnlyOurs(false)} aria-pressed={!ours}
+            style={{ padding: "4px 10px", border: "none", cursor: "pointer", fontSize: 12, background: !ours ? "var(--ink)" : "transparent", color: !ours ? "var(--paper-bright)" : "var(--ink)" }}>All ({allKeys.length})</button>
+        </span>
+      )}
+      {mode === "plan" && prepStatus && prepStatus.phase !== "done" && (
+        <span style={{ fontSize: 12, color: prepStatus.phase === "error" ? "var(--c-danger)" : "var(--ink-muted)" }}>✨ {prepStatus.phase === "error" ? `AI prep stopped: ${prepStatus.error}` : `${prepStatus.phase}… ${prepStatus.total > 1 ? `${prepStatus.done}/${prepStatus.total}` : ""}`}</span>
+      )}
+      {mode === "plan" && onPrepare && !prepStatus && (
+        <button type="button" onClick={onPrepare} title="Have the AI re-name and re-sort every sheet and re-read the plans' legends, notes and wall schedules"
+          style={{ ...ctrlBtn, fontSize: 12 }}>✨ Re-sort sheets</button>
+      )}
       {onBrowseProjects && (
         <button onClick={onBrowseProjects} title="Back to your team's projects"
           style={{ border: "none", background: "transparent", color: "var(--cobalt)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 12, padding: "2px 4px" }}>
@@ -1034,6 +1057,7 @@ export default function PlanNavigator({
                 </div>
                 <div data-preview-caption style={{ padding: "8px 10px", display: "flex", alignItems: "baseline", gap: 8 }}>
                   <strong style={{ fontFamily: "var(--f-mono)", fontSize: 12.5, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }} title={key}>{labelOf(key)}</strong>
+                  {sheetInfo[key]?.kind && <span title={sheetInfo[key].why || "Sheet type (AI)"} style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", color: isOurSheet(sheetInfo[key]) ? "var(--c-positive)" : "var(--ink-muted)", border: `1px solid ${isOurSheet(sheetInfo[key]) ? "var(--c-positive)" : "var(--ink-faint)"}`, padding: "1px 5px", whiteSpace: "nowrap" }}>{KIND_LABELS[sheetInfo[key].kind] || sheetInfo[key].kind}</span>}
                   {levels[key] && <span title="Level" style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", color: "var(--ink-muted)", border: "1px solid var(--ink-faint)", padding: "1px 5px" }}>{levels[key]}</span>}
                   {search?.chipsByKey[key]?.map((t) => (
                     <span key={`m:${t}`} title="Matched text on this sheet" style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", color: "var(--cobalt)", border: "1px solid var(--cobalt)", padding: "1px 5px", whiteSpace: "nowrap" }}>{t}</span>

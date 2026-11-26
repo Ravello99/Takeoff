@@ -26,7 +26,7 @@ export const TAKEOFF_DOCUMENT_KEYS = Object.freeze([
   "schema", "project_name", "units", "client_info", "sheets", "conditions", "condition_columns",
   "shape_labels", "palette", "shapes", "markups", "rfis", "approvals", "proposals",
   "condition_edit_proposals", "rules", "sheet_group", "last_group", "sheet_tabs", "stitches",
-  "sheet_levels", "layer_overrides", "provenance_counters",
+  "sheet_levels", "layer_overrides", "provenance_counters", "sheet_info", "ai_prep",
 ]);
 
 /** One `sheets[]` entry. `scale_source` rides only when known; `scale_confirmed`
@@ -50,6 +50,8 @@ export function buildTakeoffDocument(f = {}) {
   const sheetLevels = obj(f.sheet_levels);
   const layerOverrides = obj(f.layer_overrides);
   const prov = f.provenance_counters;
+  const sheetInfo = obj(f.sheet_info);   // sheetKey → { number, title, kind, partitions, … } (AI sheet index)
+  const aiPrep = obj(f.ai_prep);         // sheetKey → the AI's legend / notes / wall-type read, done ahead of Find walls
   const hasProv = !!(prov && prov.shapes_deleted && Object.keys(prov.shapes_deleted).length);
   return {
     schema: TAKEOFF_SCHEMA,
@@ -75,5 +77,7 @@ export function buildTakeoffDocument(f = {}) {
     ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}),
     ...(Object.keys(layerOverrides).length ? { layer_overrides: layerOverrides } : {}),
     ...(hasProv ? { provenance_counters: prov } : {}),
+    ...(Object.keys(sheetInfo).length ? { sheet_info: sheetInfo } : {}),
+    ...(Object.keys(aiPrep).length ? { ai_prep: aiPrep } : {}),
   };
 }

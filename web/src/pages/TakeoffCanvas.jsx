@@ -227,6 +227,7 @@ import { scoreRun, isWallModel, featureIndexMap, DROP_BELOW, DOUBT_BELOW } from 
 import { notesText, notesScore, locateNotes } from "../lib/notesFinder";
 import { legendSamples, matchWallStyles } from "../lib/legendStyles";
 import { typeUntaggedWalls, typeThickness } from "../lib/wallTypes";
+import { titleBlockText, sheetDisplayName, isOurSheet } from "../lib/sheetIndex";
 
 // Find walls review groups: a scope note's walls, screened (existing) walls, or a plan tag
 const wfKey = (w) => w.groupOverride || w.noteKey || (w.existing && !w.inScope ? "§EX" : (w.tag || "?"));
@@ -400,6 +401,9 @@ export default function TakeoffCanvas() {
   const [labelsByFile, setLabelsByFile] = useState({}); // { file: { pageNum: "A003" } } from the title block
   const pageLabels = labelsForFile(labelsByFile, active); // the active file's only: page numbers repeat across files
   const [sheetGroup, setSheetGroup] = useState([]);   // sheetKeys shown side-by-side; [] = single-sheet mode
+  const [sheetInfo, setSheetInfo] = useState({});   // sheetKey → AI sheet index { number, title, kind, interior_partitions, exterior, ceilings } — persisted (`sheet_info`)
+  const [aiPrep, setAiPrep] = useState({});         // sheetKey → the AI's legend / notes / wall-type read, done ahead of Find walls — persisted (`ai_prep`)
+  const [prepStatus, setPrepStatus] = useState(null); // background project prep: { phase, done, total } | null
   const [sheetLevels, setSheetLevels] = useState({}); // sheetKey → level label ("L1") — persisted (additive `sheet_levels` key); groups the gallery for multi-floor sets
   const [lastGroup, setLastGroup] = useState([]);     // most recent side-by-side composition — "Regroup" restores it
   // plan-file uploads/downloads in flight (vanguardApi transfer events) → the progress card
@@ -1387,6 +1391,8 @@ export default function TakeoffCanvas() {
   const tabLabel = (k) => {
     if (isStitchKey(k)) return stitchById[k]?.name || "Stitched sheets";
     const lvl = sheetLevels[k] ? `${sheetLevels[k]} · ` : "";   // assigned floor/level rides every tab label
+    const named = sheetDisplayName(sheetInfo[k]);              // the AI sheet index: "A2.0 Proposed Floor Plan"
+    if (named) return lvl + named;
     if (galleryLabels[k]) return lvl + galleryLabels[k];
     const t = parseSheetKey(k);
     if (t.file === active && pageLabels[t.page]) return lvl + pageLabels[t.page];
@@ -1542,7 +1548,7 @@ export default function TakeoffCanvas() {
     if (!last) return null;
     return { sf: last.computed.area_sf, tag: conditions.find((c) => c.id === last.condition_id)?.finish_tag || "" };
   })();
-  const labelFor = (p) => stitchById[p.key]?.name || (p.file === active && pageLabels[p.page]) || (p.page > 1 ? `Sheet ${p.page}` : p.file);
+  const labelFor = (p) => stitchById[p.key]?.name || sheetDisplayName(sheetInfo[p.key]) || (p.file === active && pageLabels[p.page]) || (p.page > 1 ? `Sheet ${p.page}` : p.file);
   // Scale semantics (why geometry divides by factorFor and calibration
   // multiplies back to baseline) are documented on the pure functions in
   // lib/panelGeometry.js; these wrappers bind the live scales/renderScalesRef.
@@ -2050,6 +2056,9 @@ export default function TakeoffCanvas() {
     // Extracted to sanitizeSheetLevels (lib/sheetLevels.js) so this gate has
     // its own unit tests independent of the reducer.
     setSheetLevels(sanitizeSheetLevels(a.sheet_levels));
+    // additive AI keys: the sheet index and the ahead-of-time notes reads (else-clear like sheet_levels)
+    setSheetInfo(a.sheet_info && typeof a.sheet_info === "object" && !Array.isArray(a.sheet_info) ? a.sheet_info : {});
+    setAiPrep(a.ai_prep && typeof a.ai_prep === "object" && !Array.isArray(a.ai_prep) ? a.ai_prep : {});
     // additive `layer_overrides` (#85 — per-sheet PDF-layer Wall/Off overrides
     // for the One-Click mask): same else-clear + shape gate as sheet_levels.
     // Masks are a lazy per-sheet cache — drop them so a loaded snapshot's
@@ -2880,6 +2889,7 @@ export default function TakeoffCanvas() {
     shapes, markups, rfis, approvals, proposals, condition_edit_proposals: conditionEditProposals, rules,
     sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, stitches,
     sheet_levels: sheetLevels, layer_overrides: layerOverrides, provenance_counters: provCounters,
+    sheet_info: sheetInfo, ai_prep: aiPrep,
   });
   // Runtime restore of a saved payload — the Revisions panel's Restore lands
   // here. A runtime load (unlike mount) can interrupt work in
@@ -3112,7 +3122,7 @@ export default function TakeoffCanvas() {
     // state it serializes, so listing buildPayload (a new identity each render)
     // would fire a save on every render instead of only on a real change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, scaleUnconfirmed, markups, approvals, rfis, proposals, conditionEditProposals, rules, provCounters, sheetGroup, sheetLevels, layerOverrides, lastGroup, openTabs, stitches, projectName, clientInfo, units]);
+  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, scaleUnconfirmed, markups, approvals, rfis, proposals, conditionEditProposals, rules, provCounters, sheetGroup, sheetLevels, layerOverrides, lastGroup, openTabs, stitches, projectName, clientInfo, units, sheetInfo, aiPrep]);
   useEffect(() => { saveStateRef.current = saveState; }, [saveState]);
 
   // Flush a pending debounced save on navigate-away (unmount), and warn before a
@@ -5107,7 +5117,7 @@ export default function TakeoffCanvas() {
     if (rect.x1 - rect.x0 < 0.01 || rect.y1 - rect.y0 < 0.01) return null;
     return { key: tp.key, rect };
   }, [focusPanel, toImage]);
-  const currentSheetLabel = () => { const k = focusPanel?.key || sheetKey; const { file, page: pg } = parseSheetKey(k || ""); return labelsForFile(labelsByFile, file)[pg] || (pg > 1 ? `${file} p${pg}` : file); };
+  const currentSheetLabel = () => { const k = focusPanel?.key || sheetKey; const { file, page: pg } = parseSheetKey(k || ""); return sheetDisplayName(sheetInfo[k]) || labelsForFile(labelsByFile, file)[pg] || (pg > 1 ? `${file} p${pg}` : file); };
   useEffect(() => { vanguardApi("GET", "/api/status").then((st) => setAiEnabled(!!st?.ai_enabled), () => setAiEnabled(false)); }, []);
   function openReadSchedule() {
     if (!aiEnabled) { setCommitMsg("Connect your AI first — an admin can add it under Team → AI settings."); return; }
@@ -5397,6 +5407,90 @@ export default function TakeoffCanvas() {
     } catch { /* AI unavailable — the estimator maps them by hand as before */ }
   }
 
+  // ── AI project prep (background, when drawings are added) ─────────────────
+  // 1. index every sheet: number, title, kind, and whether it matters for
+  //    partitions / exterior / ceilings → sheet names + the "Our sheets" filter;
+  // 2. read the legend, notes and wall schedule of each partition floor plan
+  //    ahead of time → Find walls applies them the moment it runs.
+  // Saved with the project (sheet_info, ai_prep), so it runs once per sheet.
+  const prepRunningRef = useRef(false);
+  const sheetInfoRef = useRef(sheetInfo); sheetInfoRef.current = sheetInfo;
+  const aiPrepRef = useRef(aiPrep); aiPrepRef.current = aiPrep;
+  async function pageToks(key) {
+    const { file, page: pg } = parseSheetKey(key);
+    const pdf = await docFor(file);
+    const page = await pdf.getPage(pg);
+    const vp = page.getViewport({ scale: 1 });
+    const tc = await page.getTextContent();
+    return { toks: pageRuns(tc, vp), vp, tc };
+  }
+  async function prepareProject({ force = false } = {}) {
+    if (!aiEnabled || prepRunningRef.current) return;
+    prepRunningRef.current = true;
+    try {
+      const keys = [];
+      for (const sh of sheets) {
+        let n = 1; try { n = (await docFor(sh.name)).numPages || 1; } catch { continue; }
+        for (let pg = 1; pg <= n; pg++) keys.push(pg > 1 ? `${sh.name}#${pg}` : sh.name);
+      }
+      // 1. the sheet index
+      const todo = keys.filter((k) => force || !sheetInfoRef.current[k]);
+      for (let i = 0; i < todo.length; i += 12) {
+        setPrepStatus({ phase: "Naming and sorting sheets", done: i, total: todo.length });
+        const batch = [];
+        for (const k of todo.slice(i, i + 12)) {
+          try { const { toks, vp, tc } = await pageToks(k); batch.push({ key: k, number: extractSheetNumber(tc, vp) || "", text: titleBlockText(toks, vp.width, vp.height) }); }
+          catch { /* unreadable page */ }
+        }
+        if (!batch.length) continue;
+        try {
+          const r = await vanguardApi("POST", "/api/ai/index-sheets", { json: { sheets: batch } });
+          const got = {};
+          for (const x of r.sheets || []) { const { key, ...info } = x; got[key] = info; }
+          if (Object.keys(got).length) setSheetInfo((m) => ({ ...m, ...got }));
+        } catch (e) { setPrepStatus({ phase: "error", error: String(e?.message || e) }); return; }
+      }
+      // 2. ahead-of-time notes reads for the partition floor plans
+      const plans = keys.filter((k) => { const si = sheetInfoRef.current[k]; return si && si.kind === "floor_plan" && si.interior_partitions && (force || !aiPrepRef.current[k]); }).slice(0, 8);
+      for (let i = 0; i < plans.length; i++) {
+        const k = plans[i];
+        setPrepStatus({ phase: "Reading legends, notes and wall schedules", done: i, total: plans.length });
+        try {
+          const { toks } = await pageToks(k);
+          const parts = [];
+          const own = notesText(toks, 6000);
+          if (own) parts.push(`[THIS SHEET — ${sheetDisplayName(sheetInfoRef.current[k]) || k}]\n${own}`);
+          const schedHere = findScheduleOnPage(toks);
+          let sched = schedHere.score > 0 ? schedHere.text : "";
+          if (!sched) {
+            // the set's wall-types sheet, if the index found one
+            const wt = keys.find((kk) => sheetInfoRef.current[kk]?.kind === "wall_types");
+            if (wt) { try { const r2 = findScheduleOnPage((await pageToks(wt)).toks); if (r2.score > 0) sched = r2.text; } catch { /* skip */ } }
+          }
+          if (sched && !(own || "").includes(sched.slice(0, 120))) parts.push(`[WALL SCHEDULE]\n${sched.slice(0, 6000)}`);
+          // general notes sheets the index marked as ours
+          for (const kk of keys.filter((x) => x !== k && ["cover", "wall_types", "other"].includes(sheetInfoRef.current[x]?.kind)).slice(0, 4)) {
+            try { const t = notesText((await pageToks(kk)).toks, 3000); if (t && t.length > 200) { parts.push(`[${sheetDisplayName(sheetInfoRef.current[kk]) || kk}]\n${t}`); break; } } catch { /* skip */ }
+          }
+          const text = parts.join("\n\n").slice(0, 14000);
+          if (text.length < 40) continue;
+          const r = await vanguardApi("POST", "/api/ai/read-notes", { json: { text, source: sheetDisplayName(sheetInfoRef.current[k]) || k } });
+          if (r.result) { scopeResultRef.current.set(k, r.result); setAiPrep((m) => ({ ...m, [k]: r.result })); }
+        } catch { /* one sheet failing doesn't stop the rest */ }
+      }
+      setPrepStatus({ phase: "done", done: 1, total: 1 });
+      setTimeout(() => setPrepStatus((st) => (st?.phase === "done" ? null : st)), 6000);
+    } finally { prepRunningRef.current = false; }
+  }
+  // run it whenever the project's drawings change (and on open, for sheets not yet indexed)
+  const sheetsSig = sheets.map((sh) => sh.name).join("|");
+  useEffect(() => {
+    if (!aiEnabled || !sheets.length) return;
+    const t = setTimeout(() => { prepareProject(); }, 2500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiEnabled, sheetsSig]);
+
   // ── Find walls: scope from the notes ─────────────────────────────────────
   // The AI reads this sheet's notes / legend / keynotes (and the set's general-
   // notes sheets) for what puts existing walls in scope or takes walls out; each
@@ -5413,7 +5507,7 @@ export default function TakeoffCanvas() {
     const toToks = (spans) => spans.map((sp) => ({ str: sp.str, x: sp.x0, y: sp.y1, h: Math.max(1, sp.y1 - sp.y0), w: sp.x1 - sp.x0 }));
     try {
       const spans = await ensureTextSpans(wf.key);
-      let res = force ? null : scopeResultRef.current.get(wf.key);
+      let res = force ? null : (scopeResultRef.current.get(wf.key) || aiPrep[wf.key] || null);   // prepared ahead of time → no wait
       if (!res) {
       const parts = [];
       const own = notesText(toToks(spans), 6000);
@@ -5454,6 +5548,7 @@ export default function TakeoffCanvas() {
       if (!r.result) throw new Error(r.error || "The AI didn't answer in the expected form.");
       res = r.result;
       scopeResultRef.current.set(wf.key, res);
+      setAiPrep((m) => ({ ...m, [wf.key]: res }));
       }
       const located = locateNotes({ segs: vectorSegsRef.current.get(wf.key) || [], meta: segMetaRef.current.get(wf.key), texts: spans, pxPerFt: upp ? 1 / upp : 18 }, wf.walls, res.notes);
       const byTag = new Map(conditions.filter((c) => c.finish_tag).map((c) => [c.finish_tag.trim().toUpperCase(), c.id]));
@@ -11540,6 +11635,13 @@ export default function TakeoffCanvas() {
         {/* live readout — top-right, at right:56 so it clears the panel rail's
             column entirely (right:14, 34px wide — same clearance the zone panel
             uses) instead of the old magic maxHeight tuned to the rail's height. */}
+        {prepStatus && (
+          <div role="status" style={{ position: "absolute", right: CANVAS_EDGE, top: CANVAS_EDGE, zIndex: Z.canvasUi, background: "#fff", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", padding: "7px 12px", fontSize: 12, maxWidth: 340 }}>
+            {prepStatus.phase === "error" ? <span style={{ color: "var(--c-danger)" }}>✨ AI prep stopped: {prepStatus.error}</span>
+              : prepStatus.phase === "done" ? <span>✨ Drawings prepared — sheets named and sorted; Find walls is ready.</span>
+              : <span>✨ {prepStatus.phase}… {prepStatus.total > 1 ? `${prepStatus.done}/${prepStatus.total}` : ""}</span>}
+          </div>
+        )}
         {wfSaved && !wallFind && (
           <div role="status" style={{ position: "absolute", left: "50%", top: CANVAS_EDGE, transform: "translateX(-50%)", zIndex: Z.canvasUi + 1, background: "#fff", border: "1px solid #1f5cff", boxShadow: "var(--shadow-pop)", padding: "10px 14px", display: "flex", gap: 10, alignItems: "center", fontSize: 13 }}>
             <span>You have an unfinished <b>Find walls review</b> ({wfSaved.n} runs, {new Date(wfSaved.savedAt).toLocaleString()}).</span>
@@ -12074,7 +12176,8 @@ export default function TakeoffCanvas() {
           initialMode={view === "picker" ? "browse" : "plan"}
           cloudMode={cloudMode}
           sheets={sheets} withDoc={docCache.withDoc} withLoadedDoc={docCache.withLoadedDoc} scales={scales} detectedScales={detectedScales} scaleUnconfirmed={scaleUnconfirmed}
-          shapes={shapes} labels={galleryLabels}
+          shapes={shapes} labels={(() => { const m = { ...galleryLabels }; for (const [k, si] of Object.entries(sheetInfo)) { const n = sheetDisplayName(si); if (n) m[k] = n; } return m; })()}
+          sheetInfo={sheetInfo} prepStatus={prepStatus} onPrepare={aiEnabled ? () => prepareProject({ force: true }) : undefined}
           onLabel={(k, lbl) => setGalleryLabels((m) => (m[k] === lbl ? m : { ...m, [k]: lbl }))}
           onDetect={(k, det) => setDetectedScales((d) => (d[k]?.label === det.label ? d : { ...d, [k]: det }))}
           thumbCacheRef={thumbCacheRef} busyRef={statusRef}

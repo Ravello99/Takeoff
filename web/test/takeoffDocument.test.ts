@@ -31,11 +31,12 @@ test("additive keys ride only when non-empty; palette drops ids that no longer r
     provenance_counters: { shapes_deleted: {} }, approvals: [], rules: [], stitches: [], condition_columns: [], shape_labels: [],
   });
   assert.deepEqual(d.palette, ["c1"]);
-  for (const k of ["client_info", "sheet_levels", "layer_overrides", "provenance_counters", "approvals", "rules", "stitches", "condition_columns", "shape_labels"]) assert.equal(k in d, false, k);
+  for (const k of ["client_info", "sheet_levels", "layer_overrides", "provenance_counters", "approvals", "rules", "stitches", "condition_columns", "shape_labels", "sheet_info", "ai_prep"]) assert.equal(k in d, false, k);
   const full = buildTakeoffDocument({
     conditions, palette: ["c1"], client_info: { client: "ACME" }, sheet_levels: { "a.pdf": "L1" }, layer_overrides: { "a.pdf": { x: "exclude" } },
     provenance_counters: { shapes_deleted: { s1: 1 } }, approvals: [{ id: "a" }], rules: [{ id: "r" }], stitches: [{ id: "st" }],
     condition_columns: [{ id: "k" }], shape_labels: [{ id: "l" }], proposals: [{ id: "p" }], condition_edit_proposals: [{ id: "e" }],
+    sheet_info: { "a.pdf": { number: "A2.0", title: "Proposed Floor Plan" } }, ai_prep: { "a.pdf": { wall_types: [] } },
   });
   assert.ok(inOrder(Object.keys(full)));
   assert.equal(Object.keys(full).length, TAKEOFF_DOCUMENT_KEYS.length - 1, "everything but units");
