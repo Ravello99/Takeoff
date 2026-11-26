@@ -120,6 +120,16 @@ Judge only the highlighted run in each tile:
 - "confidence": 0 to 1.
 - "why": a few words.
 Answer ONLY with a JSON array, one object per tile, e.g. [{"n": 1, "wall": true, "status": "new", "tag": "", "confidence": 0.8, "why": "double line partition"}]."""
+REVIEW_CEILINGS_PROMPT = """This image is a grid of numbered tiles cut from a REFLECTED CEILING PLAN (RCP) of a commercial building.
+In each tile ONE room is outlined in TEAL; judge only the ceiling inside that outline:
+- "ceiling": "grid" for a suspended lay-in / acoustic tile (ACT) ceiling — a regular grid of squares or rectangles,
+  usually with light fixtures and diffusers sitting in grid cells; "gypsum" for a drywall/GWB ceiling or soffit
+  (plain, no grid, often with only pot lights); "open" for open to structure / exposed deck; "other" if unsure or not a room.
+- "tile": "2x2" or "2x4" for a grid ceiling (2x4 cells are twice as long as they are wide), else "".
+- "bulkhead": true if part of the outlined room is a gypsum bulkhead/soffit band (no grid) inside or along the grid.
+- "height": the ceiling height written in the room's ceiling tag (e.g. "9'-0\""), else "".
+- "confidence": 0 to 1.  "why": a few words.
+Answer ONLY with a JSON array, one object per tile, e.g. [{"n": 1, "ceiling": "grid", "tile": "2x2", "bulkhead": false, "height": "9'-0\"", "confidence": 0.85, "why": "2x2 grid with troffers"}]."""
 INDEX_SHEETS_PROMPT = """You are indexing a construction drawing set for a commercial DRYWALL / interior systems contractor
 (steel stud partitions, drywall, ceilings, exterior sheathing and framing). For each sheet below you get its
 title-block and largest text. Answer ONLY with a JSON array, one object per sheet, in the same order:
@@ -926,6 +936,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.ai_index_sheets(c, me)
         if p == ["ai", "review-runs"] and m == "POST":
             return self.ai_review_runs(c, me)
+        if p == ["ai", "review-ceilings"] and m == "POST":
+            return self.ai_review_ceilings(c, me)
         if p == ["ai", "map-tags"] and m == "POST":
             return self.ai_map_tags(c, me)
         if p == ["ai", "read-notes"] and m == "POST":
@@ -1251,6 +1263,70 @@ class Handler(BaseHTTPRequestHandler):
                               "why": str(v.get("why") or "")[:80]})
         c.execute("INSERT INTO ai_log (kind, user_id, image_hash, model, raw, result, ms, created_at) VALUES (?,?,?,?,?,?,?,?)",
                   ("vision_runs", me["id"], digest, model, reply, json.dumps(clean), ms, time.time()))
+        return self.send_json(200, {"verdicts": clean, "ms": ms, "model": model})
+
+    def ai_review_ceilings(self, c, me):
+        """Numbered RCP tiles, one outlined room each → the vision model's read of
+        each ceiling (grid / gypsum / open, tile size, bulkhead, height). Logged
+        as training data like the wall tiles."""
+        import base64
+        cfg = get_settings(c)
+        if not ai_ready(cfg):
+            raise ApiError(400, "AI isn't connected yet.")
+        body = self.read_json()
+        img = str(body.get("image") or "")
+        m_ = re.match(r"^data:(image/(?:png|jpeg|webp));base64,(.+)$", img, re.S)
+        if not m_:
+            raise ApiError(400, "Send the tiles as a PNG or JPEG image.")
+        raw_bytes = base64.b64decode(m_.group(2))
+        if len(raw_bytes) > 15 * 1024 * 1024:
+            raise ApiError(413, "That image is too large.")
+        digest = hashlib.sha256(raw_bytes).hexdigest()
+        dest = self.app.blob_path(digest)
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(raw_bytes)
+        n = max(1, min(40, int(body.get("count") or 1)))
+        tags = [str(t or "")[:60] for t in (body.get("tags") or [])][:n]
+        hint = "\n".join(f"Tile {i + 1}: the ceiling tag text read inside it is \"{t}\"" for i, t in enumerate(tags) if t)
+        legend = str(body.get("legend") or "").strip()[:800]
+        text = REVIEW_CEILINGS_PROMPT + f"\nThere are {n} tiles." + (f"\n{hint}" if hint else "") + (f"\nThe drawing's ceiling legend says: {legend}" if legend else "")
+        model = ai_model(cfg)
+        ctx = ai_context_len(cfg, model)
+        budget = answer_budget(ctx, len(text), True, want=min(4000, 120 * n + 200))
+        t0 = time.time()
+        out = ai_request(cfg, "/chat/completions", {
+            "model": model, "temperature": 0, "max_tokens": budget,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": img}},
+                {"type": "text", "text": text}]}],
+        })
+        ms = int((time.time() - t0) * 1000)
+        reply = ((out.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        if isinstance(reply, list):
+            reply = "".join(part.get("text", "") for part in reply if isinstance(part, dict))
+        reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.S)
+        clean = []
+        for v in extract_json_array(reply) or []:
+            if not isinstance(v, dict):
+                continue
+            try:
+                k = int(v.get("n"))
+            except (TypeError, ValueError):
+                continue
+            if not 1 <= k <= n:
+                continue
+            kind = str(v.get("ceiling") or "other").lower().strip()
+            kind = kind if kind in ("grid", "gypsum", "open", "other") else "other"
+            tile = re.sub(r"\s|'|\"", "", str(v.get("tile") or "").lower()).replace("×", "x")
+            tile = "2x4" if tile in ("2x4", "4x2", "24x48", "48x24") else "2x2" if tile in ("2x2", "24x24") else ""
+            conf = v.get("confidence")
+            clean.append({"n": k, "ceiling": kind, "tile": tile, "bulkhead": v.get("bulkhead") is True,
+                          "height": str(v.get("height") or "")[:12], "confidence": float(conf) if isinstance(conf, (int, float)) else 0.5,
+                          "why": str(v.get("why") or "")[:80]})
+        c.execute("INSERT INTO ai_log (kind, user_id, image_hash, model, raw, result, ms, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                  ("vision_ceilings", me["id"], digest, model, reply, json.dumps(clean), ms, time.time()))
         return self.send_json(200, {"verdicts": clean, "ms": ms, "model": model})
 
     def ai_map_tags(self, c, me):

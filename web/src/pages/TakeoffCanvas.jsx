@@ -5291,6 +5291,17 @@ export default function TakeoffCanvas() {
     }
     return best;
   }
+  // the ceiling tag written in the room ("ACT 9'-0\"", "GWB 10'-0\"") → type and height
+  function ceilTagIn(spans, ring) {
+    const inside = (spans || []).filter((t) => pointInPoly((t.x0 + t.x1) / 2, (t.y0 + t.y1) / 2, ring)).map((t) => (t.str || "").trim());
+    const all = inside.join("  ");
+    const typ = (all.match(/\b(ACT|ACP|ATC|LAY-?IN|T-?BAR|GWB|GYP(?:SUM)?|DRYWALL|EXP(?:OSED)?|OPEN|OTS)\b/i) || [])[1];
+    if (!typ) return null;
+    const ht = (all.match(/(\d{1,2}\s*['′]\s*-?\s*\d{1,2}(?:\s*\d\/\d)?\s*["″]?)/) || [])[1];
+    const t = typ.toUpperCase();
+    const kind = /^(GWB|GYP|DRYWALL)/.test(t) ? "gypsum" : /^(EXP|OPEN|OTS)/.test(t) ? "open" : "grid";
+    return { kind, text: `${t}${ht ? " " + ht.replace(/\s+/g, "") : ""}` };
+  }
   // The grid read from PIXELS: the room drawn fresh from the PDF (white, never
   // the dark-mode panel), walls and holes masked off. Catches grids the PDF
   // stores as a pattern fill or an image, which leave no lines to read.
@@ -5363,13 +5374,16 @@ export default function TakeoffCanvas() {
         const seen = det && stdTile(det);
         const tile = b.said || seen || { tileU: 2, tileV: 2 };
         const tileFrom = b.said ? "assembly" : seen ? "drawing" : "guess";
-        const r = { ...b, polyFt, holesFt, tile, tileFrom, detected: det, how, include: b.source === "takeoff" || !!det };
-        if (ceilMatches(r)) return { ...r, theta: det.theta, mode: "designed", note: "" };
+        const tag = ceilTagIn(spans, b.polyPx);
+        // a found space tagged gypsum or open is left out (tick it to put it back)
+        const tagSaysNo = b.source === "found" && tag && tag.kind !== "grid";
+        const r = { ...b, polyFt, holesFt, tile, tileFrom, detected: det, how, ceilTag: tag, include: !tagSaysNo && (b.source === "takeoff" || !!det || tag?.kind === "grid") };
+        if (ceilMatches(r)) return { ...r, theta: det.theta, mode: "designed", note: tagSaysNo ? `Tagged ${tag.text} on the plan — left out.` : "" };
         const theta0 = det ? det.theta : roomAngle(polyFt);
         const theta = bestTurn(polyFt, { tileU: tile.tileU, tileV: tile.tileV, theta: theta0, mode: "balanced" }, holesFt);
         const note = tileFrom === "guess" ? (b.source === "found" ? "Grid lines run through this space but the grid couldn't be read — tick it and set 2×2 / 2×4 if it's a grid ceiling." : "No tile size in the assembly and no grid read here — set 2×2 or 2×4 below.")
           : det && !ceilMatches(r) ? `The drawing's grid here reads ${fmtFtIn(det.tileV)} × ${fmtFtIn(det.tileU)}, but ${b.tag || "the assembly"} is ${tile.tileV}×${tile.tileU} — laid out centred instead.` : "";
-        return { ...r, theta, mode: "balanced", note };
+        return { ...r, theta, mode: "balanced", note: tagSaysNo ? `Tagged ${tag.text} on the plan — left out.` : note };
       };
       const rooms = [];
       for (const d of drawn) {
@@ -5411,11 +5425,93 @@ export default function TakeoffCanvas() {
         if (!auto) setCeilGrid({ key, sheet: labelFor(tp), upp, rooms: [], reuse: true, sel: null });
         return;
       }
-      setCeilGrid({ key, sheet: labelFor(tp), upp, rooms, reuse: true, sel: null });
+      const run = Date.now();
+      setCeilGrid({ key, sheet: labelFor(tp), upp, rooms, reuse: true, sel: null, run });
+      if (aiEnabled) setTimeout(() => aiLookAtCeilings(key, run, rooms), 30);
       const drawnAsIs = rooms.filter((r) => r.mode === "designed" && r.include).length;
       setCommitMsg(`Ceiling grid: ${rooms.filter((r) => r.include && !r.excluded).length} room${rooms.length === 1 ? "" : "s"} laid out${found ? ` (${found - unread} found on the sheet${unread ? `, ${unread} more with grid lines to check` : ""})` : ""}${drawnAsIs ? ` — ${drawnAsIs} as drawn on the RCP` : ""}.${cut ? " The search ran out of time before covering the whole sheet — add the found rooms to the takeoff and Re-run to search the rest." : ""}`);
     } finally {
       setCeilBusy("");
+    }
+  }
+  // ── the AI looks at the ceilings ──────────────────────────────────────────
+  // Every found room, and every room whose grid couldn't be read, is cut out of
+  // the sheet (fresh from the PDF) with its outline drawn on, nine to a picture,
+  // and the vision model says what the ceiling is: grid (2×2 / 2×4), gypsum, open,
+  // and whether a bulkhead runs through it. Gypsum/open → the room is left out;
+  // grid → it's put in, with the tile size when the drawing didn't settle it.
+  // Rooms the estimator has ticked or unticked are never overruled.
+  const CEIL_TILE = 448, CEIL_COLS = 3, CEIL_PER_IMAGE = 9, CEIL_LOOK_MAX = 54;
+  async function aiLookAtCeilings(key, run, rooms) {
+    const want = rooms.map((r, i) => ({ r, i })).filter(({ r }) => !r.excluded && (r.source === "found" || !r.detected || r.tileFrom === "guess")).slice(0, CEIL_LOOK_MAX);
+    if (!want.length) return;
+    const same = (g) => g && g.key === key && g.run === run;
+    const setAi = (ai) => setCeilGrid((g) => (same(g) ? { ...g, ai: { ...(g.ai || {}), ...ai } } : g));
+    setAi({ status: "looking", progress: `drawing ${want.length} room${want.length === 1 ? "" : "s"}…` });
+    let ras = null;
+    try {
+      ras = await sheetRasterFor(key);
+      if (!ras) throw new Error("This sheet isn't rendered yet.");
+      const verdicts = new Map();
+      for (let b = 0; b < want.length; b += CEIL_PER_IMAGE) {
+        const batch = want.slice(b, b + CEIL_PER_IMAGE);
+        const rows = Math.ceil(batch.length / CEIL_COLS);
+        const grid = document.createElement("canvas");
+        grid.width = CEIL_TILE * Math.min(CEIL_COLS, batch.length); grid.height = CEIL_TILE * rows;
+        const gx = grid.getContext("2d");
+        gx.fillStyle = "#fff"; gx.fillRect(0, 0, grid.width, grid.height);
+        batch.forEach(({ r }, n) => {
+          const xs = r.polyPx.map((q) => q[0]), ys = r.polyPx.map((q) => q[1]);
+          const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+          const half = Math.max(x1 - x0, y1 - y0) / 2 * 1.12 + 4;
+          const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+          const ox = (n % CEIL_COLS) * CEIL_TILE, oy = Math.floor(n / CEIL_COLS) * CEIL_TILE, k = CEIL_TILE / (2 * half);
+          gx.save();
+          gx.beginPath(); gx.rect(ox, oy, CEIL_TILE, CEIL_TILE); gx.clip();
+          gx.drawImage(ras.cv, (cx - half) * ras.ws, (cy - half) * ras.ws, 2 * half * ras.ws, 2 * half * ras.ws, ox, oy, CEIL_TILE, CEIL_TILE);
+          gx.strokeStyle = "rgba(13,148,136,0.85)"; gx.lineWidth = 4; gx.lineJoin = "round";
+          gx.beginPath(); r.polyPx.forEach(([x, y], q) => { const X = ox + (x - cx + half) * k, Y = oy + (y - cy + half) * k; if (q) gx.lineTo(X, Y); else gx.moveTo(X, Y); }); gx.closePath(); gx.stroke();
+          gx.restore();
+          gx.strokeStyle = "#333"; gx.lineWidth = 2; gx.strokeRect(ox + 1, oy + 1, CEIL_TILE - 2, CEIL_TILE - 2);
+          gx.fillStyle = "#000"; gx.fillRect(ox + 4, oy + 4, 34, 26);
+          gx.fillStyle = "#fff"; gx.font = "bold 18px sans-serif"; gx.fillText(String(n + 1), ox + 10, oy + 24);
+        });
+        setAi({ status: "looking", progress: `the AI is looking at rooms ${b + 1}–${b + batch.length} of ${want.length}…` });
+        const res = await vanguardApi("POST", "/api/ai/review-ceilings", { json: { image: grid.toDataURL("image/jpeg", 0.88), count: batch.length, tags: batch.map(({ r }) => r.ceilTag?.text || "") } });
+        grid.width = grid.height = 0;
+        for (const v of res.verdicts || []) { const it = batch[v.n - 1]; if (it) verdicts.set(it.r.id, v); }
+      }
+      ras.cv.width = ras.cv.height = 0; ras = null;
+      let out = 0, put = 0, sized = 0;
+      setCeilGrid((g) => {
+        if (!same(g)) return g;
+        const next = g.rooms.map((r) => {
+          const v = verdicts.get(r.id);
+          if (!v) return r;
+          const nr = { ...r, ai: v };
+          const sure = v.confidence >= 0.65;
+          const bits = [];
+          if (sure && v.ceiling !== "grid" && v.ceiling !== "other") {
+            bits.push(`AI: ${v.ceiling === "gypsum" ? "gypsum ceiling" : "open to structure"} (${v.why})`);
+            if (r.source === "found" && !r.touched && r.include) { nr.include = false; out++; }
+          } else if (sure && v.ceiling === "grid") {
+            if (r.source === "found" && !r.touched && !r.include) { nr.include = true; put++; }
+            if (v.tile && (r.tileFrom === "guess" || (r.source === "found" && !r.detected))) {
+              nr.tile = v.tile === "2x4" ? { tileU: 4, tileV: 2 } : { tileU: 2, tileV: 2 }; nr.tileFrom = "ai"; sized++;
+              if (nr.mode === "designed" && !ceilMatches(nr)) nr.mode = "balanced";
+              bits.push(`AI: ${v.tile} grid (${v.why})`);
+            }
+          }
+          if (v.bulkhead && v.confidence >= 0.6 && !r.holesPx.length) bits.push("AI sees a bulkhead/soffit here — draw it as its own ceiling (or a cut-out) so no tiles go there");
+          if (bits.length) nr.note = bits.join(" · ");
+          return nr;
+        });
+        return { ...g, rooms: next, ai: { status: "done", looked: verdicts.size, out, put, sized } };
+      });
+    } catch (e) {
+      if (ras) { ras.cv.width = ras.cv.height = 0; ras = null; }
+      const msg = String(e?.message || e);
+      setAi({ status: "error", error: /text only|multimodal|image/i.test(msg) ? "The model on your AI server can't read pictures — use a vision model (Qwen3-VL)." : msg });
     }
   }
   // a room's layout spec (as-drawn uses the drawing's own module, direction and line positions)
@@ -12020,6 +12116,13 @@ export default function TakeoffCanvas() {
                 <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55 }}>Ceiling grid — {g.sheet}</span>
                 <button type="button" onClick={() => setCeilGrid(null)} title="Close the ceiling grid" style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--ink)", padding: 2 }}><Icon name="close" size={14} /></button>
               </div>
+              {g.ai && (
+                <div style={{ padding: "5px 8px", marginBottom: 8, background: g.ai.status === "error" ? "#fef2f2" : "#f5f3ff", border: `1px solid ${g.ai.status === "error" ? "#ef4444" : "#a78bfa"}`, fontSize: 12 }}>
+                  {g.ai.status === "looking" ? <>✨ {g.ai.progress}</>
+                    : g.ai.status === "error" ? <>The AI couldn't look: {g.ai.error}</>
+                    : <>✨ The AI looked at {g.ai.looked} room{g.ai.looked === 1 ? "" : "s"}{g.ai.out ? ` · left out ${g.ai.out} gypsum/open` : ""}{g.ai.put ? ` · put in ${g.ai.put}` : ""}{g.ai.sized ? ` · set the tile in ${g.ai.sized}` : ""}{!g.ai.out && !g.ai.put && !g.ai.sized ? " · nothing to change" : ""}.</>}
+                </div>
+              )}
               {job ? (<>
                 <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.1 }}>{job.tiles.bought} tiles</div>
                 <div style={{ opacity: 0.75, marginBottom: 6 }}>{job.tiles.full} full + {job.tiles.bought - job.tiles.full} cut into {job.tiles.cut} border pieces · {job.tiles.wasteSf} SF waste · {Math.round(job.rooms.reduce((a, q) => a + q.areaSf, 0))} SF</div>
@@ -12083,7 +12186,7 @@ export default function TakeoffCanvas() {
                       style={{ padding: "6px 0", borderTop: n ? "1px dashed var(--ink-faint)" : "none", background: g.sel === i ? "rgba(31,92,255,0.06)" : "transparent", opacity: q ? 1 : 0.75 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 6, alignItems: "center" }}>
                         <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontWeight: 700 }} title="Include this room in the grid and the material count">
-                          <input type="checkbox" checked={r.include} onChange={(e) => ceilRoomPatch(i, { include: e.target.checked })} />
+                          <input type="checkbox" checked={r.include} onChange={(e) => ceilRoomPatch(i, { include: e.target.checked, touched: true })} />
                           {q ? `${j + 1}. ` : ""}{r.label}
                         </label>
                         <span style={{ opacity: 0.7, whiteSpace: "nowrap" }}>{r.source === "found" ? <span style={{ color: "#7c3aed", fontWeight: 600 }}>found · </span> : r.tag ? `${r.tag} · ` : ""}{q ? `${Math.round(q.areaSf)} SF` : ""}</span>
@@ -12092,7 +12195,7 @@ export default function TakeoffCanvas() {
                         Borders {fmtFtIn(q.borders.uLow)} / {fmtFtIn(q.borders.uHigh)} along the {fmtFtIn(sp.tileU)} way, {fmtFtIn(q.borders.vLow)} / {fmtFtIn(q.borders.vHigh)} across ·{" "}
                         <span style={{ color: cen ? "#047857" : "#b45309", fontWeight: 600 }}>{cen ? "centred" : q.centered.u || q.centered.v ? "centred one way" : "off-centre"}</span>
                       </div>}
-                      {q && <div style={{ opacity: 0.8 }}>{q.fullTiles} full tiles · {q.cutPieces.length} cut pieces{r.holesPx.length ? ` · ${r.holesPx.length} bulkhead${r.holesPx.length === 1 ? "" : "s"}/soffit${r.holesPx.length === 1 ? "" : "s"} cut out` : ""}{r.how ? ` · grid read from the ${r.how === "lines" ? "drawing's lines" : "drawing's pixels"}` : ""}</div>}
+                      {q && <div style={{ opacity: 0.8 }}>{q.fullTiles} full tiles · {q.cutPieces.length} cut pieces{r.holesPx.length ? ` · ${r.holesPx.length} bulkhead${r.holesPx.length === 1 ? "" : "s"}/soffit${r.holesPx.length === 1 ? "" : "s"} cut out` : ""}{r.how ? ` · grid read from the ${r.how === "lines" ? "drawing's lines" : "drawing's pixels"}` : ""}{r.ceilTag ? ` · tag ${r.ceilTag.text}` : ""}</div>}
                       {q && q.slivers.map((t) => <div key={t} style={{ color: "#b91c1c" }}>⚠ {t}</div>)}
                       {r.note && <div style={{ color: "#b45309" }}>{r.note}</div>}
                       {r.include && <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
