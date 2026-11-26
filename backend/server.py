@@ -278,10 +278,83 @@ def normalize_ai_url(url: str) -> str:
     return u
 
 
+def runpod_job_base(cfg: dict) -> str | None:
+    """https://api.runpod.ai/v2/<endpoint> for a RunPod Serverless address
+    (…/v2/<endpoint>/openai/v1), else None."""
+    m = re.match(r"^(https?://[^/]+/v2/[A-Za-z0-9_-]+)/openai/v1/?$", normalize_ai_url(cfg.get("ai_base_url") or ""))
+    return m.group(1) if m else None
+
+
 def is_serverless(cfg: dict) -> bool:
     """RunPod Serverless: workers start on demand, so a request may wait out a cold
     start (minutes on a new endpoint, while it downloads the model)."""
-    return "api.runpod.ai/v2/" in (cfg.get("ai_base_url") or "")
+    return runpod_job_base(cfg) is not None
+
+
+def runpod_job(cfg: dict, path: str, body: dict | None, timeout: int) -> dict:
+    """An OpenAI-style call as a RunPod job: POST /run with the route and body, then
+    poll /status until it finishes. A cold start can take minutes; holding one HTTP
+    request open that long through RunPod's /openai proxy gets cut by Cloudflare
+    (502/524), a job never does."""
+    import urllib.request
+    import urllib.error
+    base = runpod_job_base(cfg)
+    headers = {"Content-Type": "application/json", "Accept": "application/json",
+               "User-Agent": "VanguardTakeoff/1.0 (+https://takeoff.vanguarddrywall.ca)",
+               **({"Authorization": f"Bearer {cfg['ai_api_key']}"} if cfg.get("ai_api_key") else {})}
+
+    def call(url, data=None):
+        req = urllib.request.Request(url, data=json.dumps(data).encode() if data is not None else None,
+                                     method="POST" if data is not None else "GET", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as res:
+                return json.loads(res.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            detail = e.read()[:300].decode("utf-8", "replace")
+            if e.code in (401, 403):
+                raise ApiError(502, "RunPod refused the API key. Use a RunPod API key (Settings → API Keys) in Team → AI settings.")
+            if e.code == 404:
+                raise ApiError(502, "RunPod doesn't know that endpoint ID. Check the address: https://api.runpod.ai/v2/ENDPOINT-ID/openai/v1")
+            raise ApiError(502, f"RunPod answered {e.code}: {detail or e.reason}")
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise ApiError(502, f"Couldn't reach RunPod ({getattr(e, 'reason', e)}).")
+
+    job = call(f"{base}/run", {"input": {"openai_route": "/v1" + path, "openai_input": body or {}}})
+    jid = job.get("id")
+    if not jid:
+        raise ApiError(502, f"RunPod didn't accept the job: {str(job)[:200]}")
+    deadline = time.time() + timeout
+    delay = 1.0
+    while True:
+        st = call(f"{base}/status/{jid}")
+        status = st.get("status")
+        if status == "COMPLETED":
+            out = st.get("output")
+            # the worker yields its answer: usually [ {…completion…} ], sometimes the dict or a JSON string
+            if isinstance(out, list):
+                out = next((o for o in out if isinstance(o, dict)), out[0] if out else {})
+            if isinstance(out, str):
+                try:
+                    out = json.loads(out)
+                except ValueError:
+                    out = {"choices": [{"message": {"content": out}}]}
+            if isinstance(out, dict) and out.get("error"):
+                raise ApiError(400, f"The AI server answered: {str(out['error'])[:300]}")
+            return out if isinstance(out, dict) else {}
+        if status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+            err = str(st.get("error") or status)
+            if "not a multimodal model" in err:
+                raise ApiError(400, "The model on your AI server reads text only, not pictures.")
+            raise ApiError(502, f"The AI job {status.lower().replace('_', ' ')}: {err[:300]}")
+        if time.time() > deadline:
+            try:
+                call(f"{base}/cancel/{jid}", {})
+            except ApiError:
+                pass
+            raise ApiError(504, "The AI is still starting up — a new or long-idle RunPod Serverless endpoint loads the model first "
+                                "(the very first start downloads it, up to ~10 minutes). Watch the endpoint's logs and try again once it's ready.")
+        time.sleep(delay)
+        delay = min(3.0, delay * 1.3)
 
 
 AI_TIMEOUT_SERVERLESS = 900   # a brand-new endpoint downloads ~17 GB before its first answer
@@ -293,7 +366,8 @@ def ai_request(cfg: dict, path: str, body: dict | None = None, timeout: int = AI
     import urllib.error
     serverless = is_serverless(cfg)
     if serverless:
-        timeout = max(timeout, AI_TIMEOUT_SERVERLESS if body is not None or path != "/models" else 120)
+        # RunPod Serverless: go through its job queue, never one long-held request
+        return runpod_job(cfg, path, body, max(timeout, AI_TIMEOUT_SERVERLESS if body is not None else 300))
     url = normalize_ai_url(cfg["ai_base_url"]) + path
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET",

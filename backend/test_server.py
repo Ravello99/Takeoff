@@ -245,6 +245,50 @@ class ServerTest(unittest.TestCase):
         finally:
             server.send_mail = real
 
+    def test_ai_runpod_serverless(self):
+        # a stand-in for RunPod Serverless: jobs go in at /run and are polled at /status
+        from http.server import BaseHTTPRequestHandler
+        seen = {"polls": 0}
+        class Fake(BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def _send(self, obj, code=200):
+                b = json.dumps(obj).encode()
+                self.send_response(code); self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])) or b"{}")
+                if self.path == "/v2/ep1/run":
+                    seen["job"] = body; seen["auth"] = self.headers.get("Authorization"); seen["polls"] = 0
+                    return self._send({"id": "job-1", "status": "IN_QUEUE"})
+                self._send({}, 404)
+            def do_GET(self):
+                if self.path == "/v2/ep1/status/job-1":
+                    seen["polls"] += 1
+                    if seen["polls"] < 2:                     # still cold-starting
+                        return self._send({"id": "job-1", "status": "IN_PROGRESS"})
+                    route = seen["job"]["input"]["openai_route"]
+                    out = {"data": [{"id": "Qwen/Qwen3-VL-8B-Instruct"}]} if route == "/v1/models" else \
+                          {"choices": [{"message": {"content": '[{"tag": "WP-1", "stud_size": "3-5/8\\"", "stud_oc": 16}]'}}]}
+                    return self._send({"id": "job-1", "status": "COMPLETED", "output": [out]})
+                self._send({}, 404)
+        fake = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+        threading.Thread(target=fake.serve_forever, daemon=True).start()
+        admin = Client(self.port)
+        admin.req("POST", "/api/setup", {"name": "A", "email": "rp@v.ca", "password": "correct horse"})
+        base = f"http://127.0.0.1:{fake.server_address[1]}/v2/ep1/openai/v1"
+        self.assertEqual(admin.req("PUT", "/api/settings/ai", {"ai_base_url": base, "ai_api_key": "rp-key", "ai_model": "Qwen/Qwen3-VL-8B-Instruct"})[0], 200)
+        s, out, _ = admin.req("POST", "/api/settings/ai/test")
+        self.assertEqual((s, out["models"]), (200, ["Qwen/Qwen3-VL-8B-Instruct"]))
+        self.assertEqual(seen["job"]["input"]["openai_route"], "/v1/models")
+        self.assertEqual(seen["auth"], "Bearer rp-key")
+        s, out, _ = admin.req("POST", "/api/ai/read-schedule", {"text": "WALL SCHEDULE\nWP-1\n5/8 GYPSUM BOARD EACH SIDE", "source": "A2.0"})
+        self.assertEqual((s, out["walls"][0]["tag"]), (200, "WP-1"))
+        job = seen["job"]["input"]
+        self.assertEqual(job["openai_route"], "/v1/chat/completions")
+        self.assertEqual(job["openai_input"]["model"], "Qwen/Qwen3-VL-8B-Instruct")
+        self.assertIn("5/8 GYPSUM BOARD", job["openai_input"]["messages"][0]["content"])
+        self.assertGreaterEqual(seen["polls"], 2)
+
     def test_ai_flow(self):
         # a stand-in for vLLM's OpenAI-compatible server
         import base64
