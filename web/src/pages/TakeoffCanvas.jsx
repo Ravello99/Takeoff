@@ -224,6 +224,7 @@ import { fmtCheckLen, parseLenInput, checkVerdict, M_PER_FT, areaVal, areaUnit, 
 import * as panelGeom from "../lib/panelGeometry.js";
 import { findWalls, FEATURE_NAMES, FEATURE_VERSION } from "../lib/findWalls";
 import { scoreRun, isWallModel, featureIndexMap, DROP_BELOW, DOUBT_BELOW } from "../lib/wallModel";
+import { planJob, detectGrid, roomAngle, tileSizeFromText, bestTurn, fromGrid, fmtFtIn } from "../lib/ceilingGrid";
 import { notesText, notesScore, locateNotes } from "../lib/notesFinder";
 import { legendSamples, matchWallStyles } from "../lib/legendStyles";
 import { typeUntaggedWalls, typeThickness } from "../lib/wallTypes";
@@ -417,6 +418,7 @@ export default function TakeoffCanvas() {
   const [schedOpen, setSchedOpen] = useState(false);   // AI tools → Read schedule (the project's own wall schedule → project assemblies)
   const [aiEnabled, setAiEnabled] = useState(false);
   const schedCacheRef = useRef(new Map());   // sheet key → { label, score, text, heading } — a page is searched once per session
+  const [ceilGrid, setCeilGrid] = useState(null);       // AI tools → Ceiling grid: { key, upp, rooms: [{ id, label, tag, tile, polyFt, polyPx, theta, mode, detected, note, holes }], reuse, sel }
   const [wallFind, setWallFind] = useState(null);       // Find walls review: { key, walls, map: tag → condition id | "", off: Set<wall id> }
   const [focusKey, setFocusKey] = useState("");         // panel of the last click — scale/calibrate target in group mode
   // Stitches (#161): persisted match-line composites (lib/stitches.ts) — a
@@ -5227,6 +5229,7 @@ export default function TakeoffCanvas() {
     try { const saved = JSON.parse(localStorage.getItem("vt_wall_colors") || "{}"); for (const t of Object.keys(colors)) if (saved[t]) colors[t] = saved[t]; } catch { /* none saved */ }
     setWfSel(new Set());
     setWfSaved(null);
+    setCeilGrid(null);
     setWallFind(wfConsolidate({ key: tp.key, walls: res.walls, map, colors, off, auto, touched: new Set(), pens: res.pens, checker: { trained: !!wm.model, n: wm.model?.n || 0, decisions: wm.decisions, offline: !!wm.offline, dropped: auto.size, doubtful } }));
     setCommitMsg(`Found ${res.walls.length} wall runs${auto.size ? ` — the wall checker dropped ${auto.size} likely non-walls` : ""}.${aiEnabled ? " The AI is reading the legend and notes and matching tags…" : ""} Map each tag to an assembly, click a run to drop or restore it, then Add.`);
     // the AI joins every run: legend & notes (cached per sheet) and plan-tag → assembly matching
@@ -5247,6 +5250,95 @@ export default function TakeoffCanvas() {
     const rank = (t) => (t.startsWith("§N") ? 0 : t === "§EX" ? 2 : t === "?" ? 3 : 1);
     return [...g.values()].sort((p, q) => rank(p.tag) - rank(q.tag) || q.lf - p.lf);
   };
+
+  // ── AI tools → Ceiling grid ──────────────────────────────────────────────
+  // Room by room: every lay-in ceiling (a 2×2 or 2×4 assembly) drawn on this
+  // sheet gets its grid laid out — read from the RCP's own grid lines when the
+  // architect drew them ("as drawn"), otherwise centred with borders of at least
+  // half a tile. Each border piece is sized, and pieces are cut from the
+  // offcuts of other borders (any room, same tile) before a new tile is opened.
+  const CEIL_MODES = [["designed", "As drawn on the RCP"], ["balanced", "Centred (borders ≥ ½ tile)"], ["max_full", "Most full tiles"], ["wall", "Start at a wall"]];
+  function ceilTileFor(c) {
+    if (!c) return null;
+    return tileSizeFromText([c.finish_tag, c.name, c.spec?.description, ...(c.materials || []).map((m) => m.name)].filter(Boolean).join(" · "));
+  }
+  function runCeilingGrid() {
+    const tp = focusPanel;
+    if (!tp || !tp.img.w) { setCommitMsg("Open a sheet first."); return; }
+    const upp = uppFor(tp.key);
+    if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first — the ceiling grid is laid out in real feet.`); return; }
+    const byId = Object.fromEntries(conditions.map((c) => [c.id, c]));
+    const areas = shapes.filter((s) => s.sheet_id === tp.key && s.measure_role === "floor_area" && byId[s.condition_id]?.category === "Ceilings");
+    const tiled = areas.filter((s) => ceilTileFor(byId[s.condition_id]));
+    if (!tiled.length) {
+      setCommitMsg(areas.length
+        ? "None of this sheet's ceilings use a 2×2 or 2×4 lay-in assembly — say the tile size in the assembly (e.g. \"ACT 2×4\")."
+        : `Draw the ceilings on ${labelFor(tp)} first (Area, or One-Click on the reflected ceiling plan) with a 2×2 or 2×4 ceiling assembly, then run Ceiling grid.`);
+      return;
+    }
+    const segs = vectorSegsRef.current.get(tp.key);
+    const segsFt = segs && segs.length ? Array.from(segs, (v) => v * upp) : [];
+    const rooms = tiled.map((s, i) => {
+      const c = byId[s.condition_id];
+      const tile = ceilTileFor(c);
+      const polyPx = s.verts_norm.map(([x, y]) => [x * tp.img.w, y * tp.img.h]);
+      const polyFt = polyPx.map(([x, y]) => [x * upp, y * upp]);
+      let det = null;
+      try { det = segsFt.length ? detectGrid(segsFt, polyFt) : null; } catch { det = null; }
+      const label = s.label || `${c.finish_tag || "Ceiling"} · room ${i + 1}`;
+      const base = { id: s.id, label, tag: c.finish_tag || "", condId: c.id, tile, polyFt, polyPx, holes: !!s.verts_norm_holes?.length };
+      const sameModule = det && Math.abs(det.tileU - tile.tileU) < 0.12 && Math.abs(det.tileV - tile.tileV) < 0.12;
+      if (sameModule) return { ...base, theta: det.theta, mode: "designed", detected: det, note: "" };
+      const theta0 = det ? det.theta : roomAngle(polyFt);
+      const theta = bestTurn(polyFt, { tileU: tile.tileU, tileV: tile.tileV, theta: theta0, mode: "balanced" });
+      const note = det ? `The RCP's grid here reads ${fmtFtIn(det.tileV)} × ${fmtFtIn(det.tileU)}, but ${c.finish_tag || "the assembly"} is ${tile.tileV}×${tile.tileU} — laid out centred instead.` : "";
+      return { ...base, theta, mode: "balanced", detected: det && sameModule ? det : null, note };
+    });
+    setWallFind(null);
+    setCeilGrid({ key: tp.key, sheet: labelFor(tp), upp, rooms, reuse: true, sel: null });
+    const drawn = rooms.filter((r) => r.mode === "designed").length;
+    const skipped = areas.length - tiled.length;
+    setCommitMsg(`Ceiling grid: ${rooms.length} room${rooms.length === 1 ? "" : "s"} laid out${drawn ? ` — ${drawn} read from the grid drawn on the RCP` : ""}${skipped ? `; ${skipped} ceiling${skipped === 1 ? "" : "s"} without a tile size skipped` : ""}. Change a room's layout in the panel to see the cuts change.`);
+  }
+  // a room's layout spec (as-drawn uses the drawing's own module, direction and line positions)
+  const ceilSpec = (r) => (r.mode === "designed" && r.detected
+    ? { tileU: r.detected.tileU, tileV: r.detected.tileV, theta: r.detected.theta, mode: "designed", phaseU: r.detected.phaseU, phaseV: r.detected.phaseV }
+    : { tileU: r.tile.tileU, tileV: r.tile.tileV, theta: r.theta, mode: r.mode === "designed" ? "balanced" : r.mode });
+  const ceilJob = useMemo(() => {
+    if (!ceilGrid?.rooms.length) return null;
+    try { return planJob(ceilGrid.rooms.map((r) => ({ poly: r.polyFt, spec: ceilSpec(r) })), { reuse: ceilGrid.reuse }); } catch (err) { console.warn("ceiling grid", err); return null; }
+  }, [ceilGrid]);
+  const ceilRoomPatch = (i, patch) => setCeilGrid((g) => g && { ...g, rooms: g.rooms.map((r, k) => (k === i ? { ...r, ...patch } : r)) });
+  // the assembly's own rule of thumb (tiles per SF) for comparison
+  function ceilFactorTiles(g) {
+    let n = 0, any = false;
+    const area = new Map();
+    g.rooms.forEach((r, i) => area.set(r.condId, (area.get(r.condId) || 0) + (ceilJob?.rooms[i]?.areaSf || 0)));
+    for (const [cid, sf] of area) {
+      const c = conditions.find((x) => x.id === cid);
+      const m = (c?.materials || []).find((x) => /tile/i.test(x.name || "") && x.basis === "area" && x.per > 0);
+      if (m) { any = true; n += Math.ceil(sf / m.per); }
+    }
+    return any ? n : null;
+  }
+  function ceilMaterialText(g, job) {
+    const sizes = [...new Set(g.rooms.map((r) => `${r.tile.tileV}×${r.tile.tileU}`))].join(" / ");
+    const L = [
+      `Ceiling grid — ${g.sheet} — ${g.rooms.length} room${g.rooms.length === 1 ? "" : "s"}, ${Math.round(job.rooms.reduce((a, r) => a + r.areaSf, 0))} SF`,
+      `Ceiling tile ${sizes}: ${job.tiles.bought} (${job.tiles.full} full + ${job.tiles.bought - job.tiles.full} cut into ${job.tiles.cut} border pieces; ${job.tiles.fromOffcuts} pieces from offcuts; ${job.tiles.wasteSf} SF waste)`,
+      `Main tee 12': ${job.mains.pieces} pc (${Math.round(job.mains.lf)} LF)`,
+      `Cross tee 4': ${job.cross4.pieces} pc (${job.cross4.whole} whole, ${job.cross4.cuts} border pieces${job.cross4.reusedCuts ? `, ${job.cross4.reusedCuts} from the other end of a cut tee` : ""})`,
+      ...(job.cross2.pieces ? [`Cross tee 2': ${job.cross2.pieces} pc (${job.cross2.whole} whole, ${job.cross2.cuts} border pieces)`] : []),
+      `Wall angle 12': ${job.wallAngle.pieces} pc (${Math.round(job.wallAngle.lf)} LF)`,
+      `Hanger wire + anchor: ${job.wires} ea`,
+      "",
+      "Border cuts:",
+      ...job.cutList.map((c) => `  ${c.n} × ${c.size} (${c.tile} tile)${c.fromOffcuts ? ` — ${c.fromOffcuts} from offcuts` : ""}`),
+      "",
+      ...g.rooms.map((r, i) => { const q = job.rooms[i]; return `${r.label}: ${Math.round(q.areaSf)} SF, ${q.fullTiles} full + ${q.cutPieces.length} cut; borders ${fmtFtIn(q.borders.uLow)} / ${fmtFtIn(q.borders.uHigh)} × ${fmtFtIn(q.borders.vLow)} / ${fmtFtIn(q.borders.vHigh)}${q.centered.u && q.centered.v ? " (centred)" : ""}`; }),
+    ];
+    return L.join("\n");
+  }
 
   // ── Find walls: the AI looks at the doubtful runs ───────────────────────
   // The sheet is drawn ONCE from the PDF (fresh, white, never the dark-mode
@@ -9716,7 +9808,7 @@ export default function TakeoffCanvas() {
           <button type="button" onClick={addCondition} title="Add assembly" aria-label="Add assembly"><Icon name="plus" size={14} /></button>
           <button type="button" onClick={() => setWorkspaceDetailsOpen((v) => !v)} aria-expanded={workspaceDetailsOpen} disabled={!aCond}>Properties</button></>}
         history={<><button type="button" onClick={() => poly.length ? dropLastPoint() : undoShapeCommand()} title="Undo (⌘Z)" aria-label="Undo"><Icon name="undo" size={16} /></button><button type="button" onClick={redoShapeCommand} title="Redo (⇧⌘Z)" aria-label="Redo"><span style={{ display: "flex", transform: "scaleX(-1)" }}><Icon name="undo" size={16} /></span></button></>}
-        aids={<>{!simple && <button type="button" aria-pressed={tool === "zone"} onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))} title="Zone check — trace a region (an apartment, a wing) to read every assembly's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."><Icon name="zone" size={15} />Zone</button>}<button type="button" aria-pressed={snapOn} onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"><Icon name="snap" size={15} />Snap</button><span className="calm-separator" /><button type="button" aria-pressed={schedOpen} onClick={openReadSchedule} title="AI tools · Read schedule — find the wall schedule in this project's drawings and turn it into this project's assemblies"><Icon name="spark" size={15} />Read schedule</button><button type="button" aria-pressed={!!wallFind} onClick={() => (wallFind ? setWallFind(null) : runFindWalls())} title="Find walls — read the wall runs from this sheet's CAD lines and suggest wall takeoffs by tag"><Icon name="surface" size={15} />Find walls</button><button type="button" aria-pressed={angleOn} onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides"><Icon name="angle" size={15} />45°</button>{!simple && <>{draftMenu}<span className="calm-separator" />{annotations.control}</>}</>}
+        aids={<>{!simple && <button type="button" aria-pressed={tool === "zone"} onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))} title="Zone check — trace a region (an apartment, a wing) to read every assembly's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."><Icon name="zone" size={15} />Zone</button>}<button type="button" aria-pressed={snapOn} onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"><Icon name="snap" size={15} />Snap</button><span className="calm-separator" /><button type="button" aria-pressed={schedOpen} onClick={openReadSchedule} title="AI tools · Read schedule — find the wall schedule in this project's drawings and turn it into this project's assemblies"><Icon name="spark" size={15} />Read schedule</button><button type="button" aria-pressed={!!wallFind} onClick={() => (wallFind ? setWallFind(null) : runFindWalls())} title="Find walls — read the wall runs from this sheet's CAD lines and suggest wall takeoffs by tag"><Icon name="surface" size={15} />Find walls</button><button type="button" aria-pressed={!!ceilGrid} onClick={() => (ceilGrid ? setCeilGrid(null) : runCeilingGrid())} title="Ceiling grid — lay out each lay-in ceiling room by room: centring, border cuts, offcut reuse and the grid materials"><Icon name="ceilingGrid" size={15} />Ceiling grid</button><button type="button" aria-pressed={angleOn} onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides"><Icon name="angle" size={15} />45°</button>{!simple && <>{draftMenu}<span className="calm-separator" />{annotations.control}</>}</>}
         action={finishOk && <button type="button" onClick={finishShape}>Finish ({poly.length})</button>}
         scaleMenu={<><button type="button" onClick={() => setUnits((u) => u === "metric" ? "imperial" : "metric")} title="Switch display units">{units === "metric" ? "m" : "ft"}</button><ToolMenu title={scaleTitle} onOpenChange={onScaleMenuDepth} face={<span data-tour="scale">{scaleFace}</span>} faceStyle={{ fontFamily: "var(--f-mono)", fontSize: 11.5, ...scaleFaceStyle }} menuStyle={{ minWidth: 250 }} items={scaleItems} /></>}
       />}
@@ -9808,6 +9900,10 @@ export default function TakeoffCanvas() {
           <button onClick={() => (wallFind ? setWallFind(null) : runFindWalls())} title="Find walls — read the wall runs from this sheet's CAD lines and suggest wall takeoffs by tag"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${wallFind ? "var(--cobalt)" : "var(--ink-faint)"}`, background: wallFind ? "var(--cobalt)" : "transparent", color: wallFind ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
             <Icon name="surface" size={15} />Find walls
+          </button>
+          <button onClick={() => (ceilGrid ? setCeilGrid(null) : runCeilingGrid())} title="Ceiling grid — lay out each lay-in ceiling room by room: centring, border cuts, offcut reuse and the grid materials"
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${ceilGrid ? "var(--cobalt)" : "var(--ink-faint)"}`, background: ceilGrid ? "var(--cobalt)" : "transparent", color: ceilGrid ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
+            <Icon name="ceilingGrid" size={15} />Ceiling grid
           </button>
           <button onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides — the next segment locks to the 45° family as you draw (hold ⇧ to force the lock at any angle)"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${angleOn ? "var(--cobalt)" : "var(--ink-faint)"}`, background: angleOn ? "var(--cobalt)" : "transparent", color: angleOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
@@ -10165,6 +10261,7 @@ export default function TakeoffCanvas() {
            <span className="vg-rail-group">AI tools</span>
            {simpleTile("readschedule", "spark", "Read schedule", "Read schedule — finds the wall schedule in this project's drawings; the AI turns it into this project's assemblies", null, () => openReadSchedule(), { armed: schedOpen })}
            {simpleTile("findwalls", "surface", "Find walls", "Find walls — read the wall runs from this sheet's CAD lines and suggest wall takeoffs by tag", null, () => { setTool("select"); if (wallFind) setWallFind(null); else runFindWalls(); }, { armed: !!wallFind })}
+           {simpleTile("ceilinggrid", "ceilingGrid", "Ceiling grid", "Ceiling grid — lay out each lay-in ceiling room by room: centring, border cuts, offcut reuse and the grid materials", null, () => { setTool("select"); if (ceilGrid) setCeilGrid(null); else runCeilingGrid(); }, { armed: !!ceilGrid })}
            <span className="vg-rail-group">Adjust</span>
            {simpleTile("deduct", "deduct", "Cut out", "Cut out — remove an opening from an area", "D", null, { tint: "var(--c-danger)" })}
            {simpleTile("calibrate", "calibrate", "Set scale", "Set scale — click two points of a known dimension", null)}
@@ -11092,6 +11189,42 @@ export default function TakeoffCanvas() {
                         Handles (corner diamonds + edge grips) rise on the hovered/selected
                         region: drag a corner, drag an edge to move the whole line, Shift-click
                         an edge to add a point, select a corner + Delete to remove it. */}
+                    {/* Ceiling grid — each room's grid clipped to the room: mains heavy,
+                        cross tees light; border strips amber, slivers (< ½ tile) red */}
+                    {ceilGrid && ceilJob && ceilGrid.key === p.key && (
+                      <g data-ceiling-grid style={{ pointerEvents: "none" }}>
+                        {ceilGrid.rooms.map((r, i) => {
+                          const g = ceilJob.rooms[i];
+                          if (!g) return null;
+                          const th = g.frame.theta, U = ceilGrid.upp;
+                          const sp = ceilSpec(r);
+                          const P = (u, v) => { const [x, y] = fromGrid(u, v, th); return [x / U, y / U]; };
+                          const band = (a0, a1, b0, b1) => [P(a0, b0), P(a1, b0), P(a1, b1), P(a0, b1)].map((q) => q.join(",")).join(" ");
+                          const { u0, u1, v0, v1 } = g.extent;
+                          const lu = g.lines.u, lv = g.lines.v, z = tf.scale;
+                          const bands = [];
+                          if (lu.length) { bands.push([u0, lu[0], v0, v1, g.borders.uLow < sp.tileU / 2 - 0.01]); bands.push([lu[lu.length - 1], u1, v0, v1, g.borders.uHigh < sp.tileU / 2 - 0.01]); }
+                          if (lv.length) { bands.push([u0, u1, v0, lv[0], g.borders.vLow < sp.tileV / 2 - 0.01]); bands.push([u0, u1, lv[lv.length - 1], v1, g.borders.vHigh < sp.tileV / 2 - 0.01]); }
+                          const sel = ceilGrid.sel === i;
+                          const cx = r.polyPx.reduce((a, q) => a + q[0], 0) / r.polyPx.length, cy = r.polyPx.reduce((a, q) => a + q[1], 0) / r.polyPx.length;
+                          const room = r.polyPx.map((q) => q.join(",")).join(" ");
+                          return (
+                            <g key={"cg" + r.id}>
+                              <clipPath id={`cg-clip-${i}`}><polygon points={room} /></clipPath>
+                              <g clipPath={`url(#cg-clip-${i})`}>
+                                <polygon points={room} fill="#0d9488" fillOpacity={0.06} />
+                                {bands.map(([a0, a1, b0, b1, thin], k) => <polygon key={k} points={band(a0, a1, b0, b1)} fill={thin ? "#dc2626" : "#f59e0b"} fillOpacity={thin ? 0.3 : 0.18} />)}
+                                {lv.map((v) => { const [a, b] = [P(u0 - 1, v), P(u1 + 1, v)]; return <line key={"v" + v} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#0f766e" strokeWidth={1 / z} strokeOpacity={0.85} />; })}
+                                {lu.map((u) => { const main = g.lines.mains.includes(u); const [a, b] = [P(u, v0 - 1), P(u, v1 + 1)]; return <line key={"u" + u} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#0f766e" strokeWidth={(main ? 2.4 : 1) / z} strokeOpacity={main ? 1 : 0.85} />; })}
+                              </g>
+                              <polygon points={room} fill="none" stroke={sel ? "#1f5cff" : "#0f766e"} strokeWidth={(sel ? 3.5 : 1.8) / z} strokeLinejoin="round" />
+                              <circle cx={cx} cy={cy} r={11 / z} fill={sel ? "#1f5cff" : "#0f766e"} stroke="#fff" strokeWidth={1.5 / z} />
+                              <text x={cx} y={cy + 4 / z} textAnchor="middle" fontSize={11 / z} fontWeight={700} fill="#fff">{i + 1}</text>
+                            </g>
+                          );
+                        })}
+                      </g>
+                    )}
                     {wallFind && wallFind.key === p.key && (
                       <g data-find-walls>
                         {wallFind.walls.map((w) => {
@@ -11687,6 +11820,86 @@ export default function TakeoffCanvas() {
           );
         })()}
         {schedOpen && <ScheduleReader findSchedule={findProjectSchedule} renderSheet={renderSheetImage} visibleArea={visibleSheetArea} currentSheet={currentSheetLabel()} onClose={() => setSchedOpen(false)} onAdd={addScheduleAssemblies} />}
+        {ceilGrid && ceilJob && (() => {
+          const job = ceilJob, g = ceilGrid;
+          const factor = ceilFactorTiles(g);
+          const saved = job.tiles.naiveBought - job.tiles.bought;
+          const row = { display: "flex", justifyContent: "space-between", gap: 8, padding: "2px 0" };
+          return (
+            <div data-ceiling-grid-panel style={{ position: "absolute", left: CANVAS_EDGE, bottom: CANVAS_EDGE, width: 340, maxHeight: "68%", overflowY: "auto", padding: "12px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-pop)", zIndex: Z.canvasUi, fontSize: 12.5, color: "var(--ink)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55 }}>Ceiling grid — {g.sheet}</span>
+                <button type="button" onClick={() => setCeilGrid(null)} title="Close the ceiling grid" style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--ink)", padding: 2 }}><Icon name="close" size={14} /></button>
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.1 }}>{job.tiles.bought} tiles</div>
+              <div style={{ opacity: 0.75, marginBottom: 6 }}>
+                {job.tiles.full} full + {job.tiles.bought - job.tiles.full} cut into {job.tiles.cut} border pieces · {job.tiles.wasteSf} SF waste
+              </div>
+              {g.reuse && job.tiles.fromOffcuts > 0 && <div style={{ padding: "6px 8px", background: "#ecfdf5", border: "1px solid #10b981", marginBottom: 6 }}><b>{job.tiles.fromOffcuts}</b> border pieces come from other borders' offcuts — <b>{saved}</b> fewer tiles than cutting every piece from a new tile ({job.tiles.naiveBought}).</div>}
+              {factor != null && <div style={{ opacity: 0.7, marginBottom: 6 }}>The assembly's rule of thumb would order {factor} ({factor >= job.tiles.bought ? `${factor - job.tiles.bought} more` : `${job.tiles.bought - factor} fewer`}).</div>}
+              <label style={{ display: "flex", alignItems: "center", gap: 6, margin: "4px 0 8px", cursor: "pointer" }}>
+                <input type="checkbox" checked={g.reuse} onChange={(e) => setCeilGrid((x) => x && { ...x, reuse: e.target.checked })} />
+                Cut border pieces from offcuts (any room, same tile)
+              </label>
+              <div style={{ borderTop: "1px solid var(--ink-faint)", paddingTop: 6, marginBottom: 6 }}>
+                <div style={row}><span>Main tee 12'</span><b>{job.mains.pieces}</b></div>
+                <div style={row}><span>Cross tee 4'{job.cross4.cuts ? <span style={{ opacity: 0.6 }}> · {job.cross4.cuts} border pieces{job.cross4.reusedCuts ? `, ${job.cross4.reusedCuts} paired on one tee` : ""}</span> : null}</span><b>{job.cross4.pieces}</b></div>
+                {job.cross2.pieces > 0 && <div style={row}><span>Cross tee 2'{job.cross2.cuts ? <span style={{ opacity: 0.6 }}> · {job.cross2.cuts} border pieces</span> : null}</span><b>{job.cross2.pieces}</b></div>}
+                <div style={row}><span>Wall angle 12'</span><b>{job.wallAngle.pieces}</b></div>
+                <div style={row}><span>Hanger wire + anchor</span><b>{job.wires}</b></div>
+              </div>
+              {job.cutList.length > 0 && (
+                <div style={{ borderTop: "1px solid var(--ink-faint)", paddingTop: 6, marginBottom: 6 }}>
+                  <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 2 }}>Border cuts</div>
+                  {job.cutList.map((c) => (
+                    <div key={c.tile + c.size} style={row}>
+                      <span>{c.size} <span style={{ opacity: 0.55 }}>({c.tile}) · room {c.rooms.map((k) => k + 1).join(", ")}</span></span>
+                      <span><b>{c.n}</b>{c.fromOffcuts ? <span style={{ color: "#047857" }}> · {c.fromOffcuts} from offcuts</span> : null}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ borderTop: "1px solid var(--ink-faint)", paddingTop: 6 }}>
+                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 2 }}>Rooms</div>
+                {g.rooms.map((r, i) => {
+                  const q = job.rooms[i];
+                  if (!q) return null;
+                  const sp = ceilSpec(r);
+                  const cen = q.centered.u && q.centered.v;
+                  return (
+                    <div key={r.id} onMouseEnter={() => setCeilGrid((x) => x && x.sel !== i ? { ...x, sel: i } : x)} onMouseLeave={() => setCeilGrid((x) => x && x.sel === i ? { ...x, sel: null } : x)}
+                      style={{ padding: "6px 0", borderTop: i ? "1px dashed var(--ink-faint)" : "none", background: g.sel === i ? "rgba(31,92,255,0.06)" : "transparent" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
+                        <b>{i + 1}. {r.label}</b>
+                        <span style={{ opacity: 0.7 }}>{sp.tileV === sp.tileU ? "2×2" : "2×4"} · {Math.round(q.areaSf)} SF</span>
+                      </div>
+                      <div style={{ opacity: 0.8 }}>
+                        Borders {fmtFtIn(q.borders.uLow)} / {fmtFtIn(q.borders.uHigh)} along the {fmtFtIn(sp.tileU)} way, {fmtFtIn(q.borders.vLow)} / {fmtFtIn(q.borders.vHigh)} across ·{" "}
+                        <span style={{ color: cen ? "#047857" : "#b45309", fontWeight: 600 }}>{cen ? "centred" : q.centered.u || q.centered.v ? "centred one way" : "off-centre"}</span>
+                      </div>
+                      <div style={{ opacity: 0.8 }}>{q.fullTiles} full tiles · {q.cutPieces.length} cut pieces</div>
+                      {q.slivers.map((t) => <div key={t} style={{ color: "#b91c1c" }}>⚠ {t}</div>)}
+                      {r.note && <div style={{ color: "#b45309" }}>{r.note}</div>}
+                      {r.holes && <div style={{ opacity: 0.6 }}>Cut-outs inside this ceiling aren't subtracted from the grid.</div>}
+                      <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                        <select aria-label={`Layout for ${r.label}`} value={r.mode} onChange={(e) => ceilRoomPatch(i, { mode: e.target.value })} style={{ flex: 1, fontSize: 12 }}>
+                          {CEIL_MODES.filter(([m]) => m !== "designed" || r.detected).map(([m, t]) => <option key={m} value={m}>{t}</option>)}
+                        </select>
+                        <button type="button" disabled={r.mode === "designed"} onClick={() => ceilRoomPatch(i, { theta: r.theta + Math.PI / 2 })} title="Turn the grid 90° in this room" style={{ fontSize: 12, padding: "2px 8px", cursor: r.mode === "designed" ? "default" : "pointer" }}>Turn 90°</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                <button type="button" onClick={async () => { try { await navigator.clipboard.writeText(ceilMaterialText(g, job)); setCommitMsg("Ceiling grid material list copied."); } catch { setCommitMsg("Couldn't reach the clipboard from this page."); } }}
+                  style={{ flex: 1, padding: "6px 10px", border: "1px solid var(--cobalt)", background: "var(--cobalt)", color: "var(--paper-bright)", fontWeight: 600, cursor: "pointer" }}>Copy material list</button>
+                <button type="button" onClick={runCeilingGrid} title="Lay the rooms out again from the drawing" style={{ padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer" }}>Reset</button>
+              </div>
+              <div style={{ opacity: 0.55, fontSize: 11, marginTop: 6 }}>Amber strips are border tiles; red ones are slivers under half a tile. Mains are the heavy lines.</div>
+            </div>
+          );
+        })()}
         {wallFind && (() => {
           const groups = wallFindGroups(wallFind);
           const opts = [...conditions].sort((a, b) => (b.measure === "wall") - (a.measure === "wall") || String(a.finish_tag).localeCompare(String(b.finish_tag)));
